@@ -1,0 +1,30 @@
+# large / external / run-local (NOT committed; see README for how to obtain)
+data/
+.cache/
+.deps/
+outputs/
+wandb/
+logs/
+
+# python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+venv/
+.venv/
+
+# model checkpoints / heavy artifacts
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# misc
+.DS_Store
+*.out
+*.err
+
+# local-only (kept on disk, not shared)
+CLAUDE.md
+scripts/sbatch_*.sh

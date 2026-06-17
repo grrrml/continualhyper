@@ -1,0 +1,19 @@
+# ContinualHyper — pip-only. SD-1.5 is loaded via `diffusers` (no CompVis/ldm stack).
+# Versions are the ones we tested; newer minor versions generally work.
+
+torch==2.7.1
+torchvision==0.22.1
+diffusers==0.30.0
+transformers==4.44.2
+numpy==1.26.4
+Pillow==11.3.0
+PyYAML==6.0.2
+tqdm==4.67.1
+
+# eval metrics: CLIP-I/CLIP-T via transformers CLIP ViT-B/32; DINO ViT-S/16 via timm
+timm==1.0.24
+
+# optional: training logs + live diagnostic generations
+wandb==0.24.0
+# optional: only used to locate a bundled monospace font for the forgetting grid
+# matplotlib
