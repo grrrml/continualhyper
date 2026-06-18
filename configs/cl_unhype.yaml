@@ -22,9 +22,9 @@ target_modules: [attn2.to_k, attn2.to_v]
 # `prompt` is only the canonical diagnostic/sampling prompt (training uses the captions).
 concepts:
   - {concept_id: cifc_dog,          images_dir: data/CIFC/datasets/images/dog,          caption_dir: data/CIFC/datasets/caption/dog,          class_word: dog,            category: pet,    prompt: "a photo of V1 dog"}
-  - {concept_id: cifc_duck_toy,     images_dir: data/CIFC/datasets/images/duck_toy,     caption_dir: data/CIFC/datasets/caption/duck_toy,     class_word: "duck toy",     category: plushy, prompt: "a photo of V2 duck toy"}
+  - {concept_id: cifc_duck_toy,     images_dir: data/CIFC/datasets/images/duck_toy,     caption_dir: data/CIFC/datasets/caption/duck_toy,     class_word: "duck toy",     category: plushy, prompt: "a photo of V2 duck toy", eval_prefix: "yellow rubber"}
   - {concept_id: cifc_cat,          images_dir: data/CIFC/datasets/images/cat,          caption_dir: data/CIFC/datasets/caption/cat,          class_word: cat,            category: pet,    prompt: "a photo of V3 cat"}
-  - {concept_id: cifc_backpack,     images_dir: data/CIFC/datasets/images/backpack,     caption_dir: data/CIFC/datasets/caption/backpack,     class_word: backpack,       category: plushy, prompt: "a photo of V4 backpack"}
+  - {concept_id: cifc_backpack,     images_dir: data/CIFC/datasets/images/backpack,     caption_dir: data/CIFC/datasets/caption/backpack,     class_word: backpack,       category: plushy, prompt: "a photo of V4 backpack", eval_prefix: "red"}
   - {concept_id: cifc_teddybear,    images_dir: data/CIFC/datasets/images/teddybear,    caption_dir: data/CIFC/datasets/caption/teddybear,    class_word: "teddy bear",   category: plushy, prompt: "a photo of V5 teddy bear"}
   - {concept_id: cifc_painting,     images_dir: data/CIFC/datasets/images/painting,     caption_dir: data/CIFC/datasets/caption/painting,     class_word: painting,       category: style,  prompt: "a photo of V6 painting"}
   - {concept_id: cifc_dog2,         images_dir: data/CIFC/datasets/images/dog2,         caption_dir: data/CIFC/datasets/caption/dog2,         class_word: dog,            category: pet,    prompt: "a photo of V7 dog"}

@@ -40,15 +40,15 @@ def _read_prompts(category):
 
 
 @torch.no_grad()
-def gen_concept(bundle, manager, ident, cls, category, out_dir, n, steps, gscale, seed):
+def gen_concept(bundle, manager, gen_repl, clipt_repl, category, out_dir, n, steps, gscale, seed):
     prompts = _read_prompts(category)
     sdir = os.path.join(out_dir, "samples")
     os.makedirs(sdir, exist_ok=True)
     uncond_hidden, _, _ = bundle.encode_text([NEG])
     info, count = [], 0
     for p in prompts:
-        gen_prompt = p.replace("<TOK>", f"{ident} {cls}")
-        clipt_text = p.replace("<TOK>", cls)
+        gen_prompt = p.replace("<TOK>", gen_repl)      # generation: "<eval_prefix> V<k> <class>"
+        clipt_text = p.replace("<TOK>", clipt_repl)    # CLIP-T candidate: "<eval_prefix> <class>"
         cond_hidden, pooled, _ = bundle.encode_text([gen_prompt])
         for _ in range(n):
             g = torch.Generator(device=bundle.device).manual_seed(seed + count)
@@ -74,6 +74,8 @@ def parse_args():
     p.add_argument("--seed", type=int, default=2024)
     p.add_argument("--final_only", action="store_true",
                    help="only the final checkpoint over all concepts (no full matrix)")
+    p.add_argument("--only_concepts", default=None,
+                   help="comma-separated concept_ids to (re)generate; others left untouched")
     return p.parse_args()
 
 
@@ -92,6 +94,7 @@ def main():
     concepts = cfg["concepts"]
     n_tasks = len(concepts)
     task_ks = [n_tasks - 1] if args.final_only else list(range(n_tasks))
+    only = set(args.only_concepts.split(",")) if args.only_concepts else None
 
     for k in task_ks:
         ckpt = os.path.join(args.ckpt_dir, f"hyper_after_task{k:02d}.pt")
@@ -101,11 +104,16 @@ def main():
         load_hyper(manager, ckpt, map_location=str(device))
         for j in range(k + 1):                              # concept j was seen by task k
             c = concepts[j]
+            if only is not None and c["concept_id"] not in only:
+                continue                                    # leave already-generated cells untouched
+            prefix = c.get("eval_prefix", "").strip()       # e.g. "yellow rubber" (duck), "red" (backpack)
             ident, cls, cat = f"V{j+1}", c["class_word"], c["category"]
+            gen_repl = f"{prefix} {ident} {cls}".strip()
+            clipt_repl = f"{prefix} {cls}".strip()
             out_dir = os.path.join(out_root, f"after_task{k:02d}", f"task{j:02d}_{c['concept_id']}")
-            nimg = gen_concept(bundle, manager, ident, cls, cat, out_dir,
+            nimg = gen_concept(bundle, manager, gen_repl, clipt_repl, cat, out_dir,
                                args.num_samples, args.steps, args.guidance_scale, args.seed)
-            print(f"[gen] after_task{k:02d} / {c['concept_id']} ({cat}, '{ident} {cls}'): {nimg} imgs",
+            print(f"[gen] after_task{k:02d} / {c['concept_id']} ({cat}, '{gen_repl}'): {nimg} imgs",
                   flush=True)
     print(f"[gen] DONE -> {out_root}", flush=True)
 
