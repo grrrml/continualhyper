@@ -1,19 +1,21 @@
-"""Continual-learning baseline: train the UnHype LoRA-hypernetwork SEQUENTIALLY over concepts,
-with NO regularization on the hypernetwork weights.
+"""Continual-learning trainer for the LoRA-hypernetwork (sequential over concepts).
 
 Each concept is one task: prompt (CLIP pooled) -> hypernet -> LoRA -> diffusion reconstruction.
-Tasks are learned one after another; the hypernet weights persist across tasks but are NOT
-protected, so training task k drifts the mapping for tasks < k -> catastrophic forgetting. This
-is the intended "it should fall apart" baseline (Step 1).
+With `reg.weight == 0` this is the no-regularization baseline (catastrophic forgetting). With
+`reg.weight > 0` it adds the von-Oswald hypernetwork output-regularization (arXiv:1906.00695),
+two-stage (lookahead):
 
-Next steps (NOT here): (i) von-Oswald-style output regularization on the hypernet
-(arxiv 1906.00695) to keep old-task LoRAs stable; (ii) the LoRA scheme from arxiv 2508.08812.
+  Stage 1: DeltaTheta = -lookahead_lr * grad(L_recon)            (candidate step, detached)
+  Stage 2: L = L_recon(Theta) + beta * mean_{t<k} || H_{Theta*}(c*_t) - H_{Theta+DeltaTheta}(c*_t) ||^2
 
-Forgetting is tracked by (a) sampling each task's concept right after it is learned, and
-(b) re-sampling the FIRST concept after every task (a forgetting curve), plus a final sweep
-over all concepts.
+i.e. the hypernet may move to fit the new concept, but its LoRA output for old concepts' prompts
+(snapshotted at the start of the task) must stay put -> old concepts are not forgotten.
 
-Run:  python -u -m src.train_cl --config configs/cl_unhype.yaml
+Forgetting is tracked by sampling each concept right after it is learned and re-sampling the first
+concept after every task; per-task checkpoints feed the CIDM forgetting-matrix eval.
+
+Run:  python -u -m src.train_cl --config configs/cl_unhype.yaml                 # baseline
+      python -u -m src.train_cl --config configs/cl_unhype_reg.yaml             # with reg
 """
 
 from __future__ import annotations
@@ -23,6 +25,7 @@ import itertools
 import os
 
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torchvision.utils import save_image
 
@@ -58,10 +61,18 @@ def _sample(bundle, manager, prompt, out_dir, n, steps, gscale, seed):
         save_image(img, os.path.join(out_dir, f"sample_{i:02d}.png"))
 
 
+def _reg_mse(now, targets):
+    """von-Oswald output reg: mean over layers of MSE on (x_L, x_R) between the current LoRA
+    `now` and the start-of-task snapshot `targets`. F.mse_loss averages over anchors+elements."""
+    terms = [F.mse_loss(now[n][0], targets[n][0]) + F.mse_loss(now[n][1], targets[n][1]) for n in targets]
+    return torch.stack(terms).mean()
+
+
 def parse_args():
-    p = argparse.ArgumentParser(description="ContinualHyper UnHype-style CL baseline (no reg)")
+    p = argparse.ArgumentParser(description="ContinualHyper continual trainer (optional von-Oswald reg)")
     p.add_argument("--config", required=True)
     p.add_argument("--output_dir", default=None)
+    p.add_argument("--reg_weight", type=float, default=None, help="override reg.weight (von-Oswald beta)")
     return p.parse_args()
 
 
@@ -81,6 +92,9 @@ def main():
     diag_freq = int(train.get("diagnostic_freq", 200))   # wandb diagnostic generations every N steps
     wandb_cfg = cfg.get("wandb", {})
     use_wandb = bool(wandb_cfg.get("enabled", False))
+    reg_cfg = cfg.get("reg", {})
+    reg_weight = float(args.reg_weight if args.reg_weight is not None else reg_cfg.get("weight", 0.0))
+    lookahead_lr = float(reg_cfg.get("lookahead_lr", lr))   # von-Oswald candidate-step size (default = lr)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # fp32 backbone for the baseline (no grad-scaler headaches; hyper grads stay clean).
@@ -99,7 +113,8 @@ def main():
     seed0 = int(cfg.get("seed", 2024))
     unet = bundle.unet
 
-    print(f"[CL] {n_tasks} tasks (sequential, NO reg) | {steps_per_task} steps/task | bs={batch_size} | lr={lr}",
+    regmsg = (f"von-Oswald reg beta={reg_weight} (lookahead_lr={lookahead_lr})" if reg_weight > 0 else "NO reg")
+    print(f"[CL] {n_tasks} tasks (sequential, {regmsg}) | {steps_per_task} steps/task | bs={batch_size} | lr={lr}",
           flush=True)
     print("[CL] task order: " + ", ".join(f"{i}:{s.concept_id}('{s.diag_prompt}')" for i, s in enumerate(specs)),
           flush=True)
@@ -108,12 +123,18 @@ def main():
     if use_wandb:
         try:
             import wandb as _wandb
-            _wandb.init(project=wandb_cfg.get("project", "ContinualHyper"),
-                        name=wandb_cfg.get("name"), config=cfg)
+            run_name = wandb_cfg.get("name")
+            if reg_weight > 0:
+                run_name = (run_name or "cl") + f"_b{reg_weight}"
+            _wandb.init(project=wandb_cfg.get("project", "ContinualHyper"), name=run_name,
+                        config={**cfg, "reg_weight": reg_weight, "lookahead_lr": lookahead_lr})
             wandb = _wandb
         except Exception as e:
             print(f"[CL] wandb disabled (init failed: {e})", flush=True)
 
+    named = list(manager.heads.named_parameters())       # (name, param), stable across tasks
+    params = [p for _, p in named]
+    anchor_pooled = []   # CLIP pooled of each learned concept's canonical prompt (reg anchors)
     gstep = 0
     for k, spec in enumerate(specs):
         # Network weights PERSIST across tasks; fresh optimizer per task (clean per-task LR).
@@ -123,6 +144,14 @@ def main():
                             drop_last=True, collate_fn=collate_fn,
                             num_workers=int(train.get("num_workers", 2)))
         data_iter = itertools.cycle(loader)
+
+        # von-Oswald: snapshot the hypernet output on OLD concepts at the START of this task (Theta*)
+        targets, anchors = None, None
+        if reg_weight > 0 and anchor_pooled:
+            anchors = torch.stack(anchor_pooled, 0)          # [k, clip_size]
+            with torch.no_grad():
+                targets = {n: (a.detach(), b.detach())
+                           for n, (a, b) in manager.generate_lora(anchors).items()}
 
         for step in range(steps_per_task):
             batch = next(data_iter)
@@ -140,19 +169,33 @@ def main():
             manager.compute_and_cache_loras()
             manager.enable_lora()
             eps_pred = unet(z_t, t, encoder_hidden_states=cond_hidden).sample
-            loss = reconstruction_loss(eps_pred.float(), noise.float())   # PURE recon, no reg
+            loss = reconstruction_loss(eps_pred.float(), noise.float())   # new-concept reconstruction
 
             optimizer.zero_grad(set_to_none=True)
-            loss.backward()
+            reg_val = 0.0
+            if targets is not None:
+                # Stage 1: candidate step that minimizes ONLY the new-task loss (detached).
+                g = torch.autograd.grad(loss, params, retain_graph=False)
+                delta = {nm: (-lookahead_lr * gi).detach() for (nm, _), gi in zip(named, g)}
+                # Stage 2: anchor the hypernet output at the lookahead params Theta + DeltaTheta.
+                perturbed = {nm: p + delta[nm] for nm, p in named}
+                reg = reg_weight * _reg_mse(manager.lora_from_params(anchors, perturbed), targets)
+                g_reg = torch.autograd.grad(reg, params)
+                for p, gi, gr in zip(params, g, g_reg):    # grad = task grad + reg grad
+                    p.grad = gi + gr
+                reg_val = float(reg.item())
+            else:
+                loss.backward()
             if grad_clip > 0:
-                torch.nn.utils.clip_grad_norm_(manager.hyper_parameters(), grad_clip)
+                torch.nn.utils.clip_grad_norm_(params, grad_clip)
             optimizer.step()
 
             gstep += 1
             if step % log_every == 0 or step == steps_per_task - 1:
-                print(f"[CL] task {k}:{spec.concept_id} | step {step:4d} | loss {loss.item():.4f}", flush=True)
+                print(f"[CL] task {k}:{spec.concept_id} | step {step:4d} | loss {loss.item():.4f}"
+                      + (f" | reg {reg_val:.4f}" if targets is not None else ""), flush=True)
             if wandb is not None:
-                wandb.log({"loss": float(loss.item()), "task": k, "task_step": step,
+                wandb.log({"loss": float(loss.item()), "reg": reg_val, "task": k, "task_step": step,
                            "lora_magnitude": float(manager.current_lora_magnitude().item())}, step=gstep)
                 if gstep % diag_freq == 0:
                     # diagnostic generations for ALL concepts seen so far -> forgetting visible live
@@ -170,6 +213,11 @@ def main():
                 os.path.join(output_dir, "forgetting", f"after_task{k:02d}"), n_eval, gsteps, gscale, seed0)
         # per-task checkpoint (for the CIDM/CIFC forgetting-matrix eval: each task's model state)
         save_hyper(manager, os.path.join(output_dir, "ckpts", f"hyper_after_task{k:02d}.pt"))
+        # add this concept's anchor (pooled canonical prompt) for future tasks' regularization
+        if reg_weight > 0:
+            with torch.no_grad():
+                _, pooled_k, _ = bundle.encode_text([spec.diag_prompt])
+                anchor_pooled.append(pooled_k[0].detach())
         print(f"[CL] done task {k}:{spec.concept_id}", flush=True)
 
     # final sweep: how does EACH concept look after the whole sequence?

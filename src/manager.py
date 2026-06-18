@@ -87,6 +87,26 @@ class ContinualHyperManager(nn.Module):
         terms = [x_L.pow(2).mean() + x_R.pow(2).mean() for x_L, x_R in self._cache.values()]
         return torch.stack(terms).mean()
 
+    # --------------------------------------------------------------- von-Oswald reg helpers
+    def generate_lora(self, clip_pooled: torch.Tensor) -> Dict[str, LoraPair]:
+        """Run the heads on a pooled batch -> {layer: (x_L, x_R)} with the CURRENT params.
+        Does NOT touch the training cache (used for reg anchors/targets)."""
+        cond = clip_pooled.to(next(self.parameters()).dtype)
+        return {name: self.heads[_key(name)](cond)[1:] for name in self.layer_names}
+
+    def lora_from_params(self, clip_pooled: torch.Tensor, params: Dict[str, torch.Tensor]) -> Dict[str, LoraPair]:
+        """Like generate_lora but at OVERRIDDEN head params (functional) — for the Theta+DeltaTheta
+        lookahead. `params` keys match self.heads.named_parameters() names."""
+        from torch.func import functional_call
+        cond = clip_pooled.to(next(self.parameters()).dtype)
+        out: Dict[str, LoraPair] = {}
+        for name in self.layer_names:
+            k = _key(name)
+            sub = {pn[len(k) + 1:]: pv for pn, pv in params.items() if pn.startswith(k + ".")}
+            _, x_L, x_R = functional_call(self.heads[k], sub, (cond,))
+            out[name] = (x_L, x_R)
+        return out
+
     # --------------------------------------------------------------- params
     def hyper_parameters(self) -> List[nn.Parameter]:
         return list(self.heads.parameters())
