@@ -106,16 +106,45 @@ CIDM-faithful evaluation on the 10-task CIFC sequence (CLIP-T / CLIP-I are CIDM'
 
 | | CLIP-T | CLIP-I | DINO |
 |---|---|---|---|
-| Just-learned (diagonal of the matrix) | 0.723 | **0.790** | 0.604 |
-| After full sequence (final) | 0.732 | 0.729 | 0.423 |
-| **Forgetting** (mean peak − final) | – | +0.067 | **+0.202** |
+| Just-learned (diagonal of the matrix) | – | **0.804** | 0.631 |
+| After full sequence (final) | 0.739 | 0.742 | 0.447 |
+| **Forgetting** (DINO, mean peak − final) | | | **+0.203** |
 
-The per-concept fidelity *when a concept is first learned* already matches CIDM's reported final
-numbers (their CIDM IA ≈ 0.78), so per-concept learning is not the bottleneck — **the gap is
-forgetting**, which is exactly what Step 2 targets. The forgetting is visible in
-`forgetting_grid.jpg` (each row degrades left→right as later tasks overwrite the shared weights):
+The per-concept fidelity *when a concept is first learned* (diagonal CLIP-I ≈ 0.80) already matches
+CIDM's reported final number (their IA ≈ 0.78), so per-concept learning is not the bottleneck —
+**the gap is forgetting**. It is visible in `forgetting_grid.jpg` (each row degrades left→right as
+later tasks overwrite the shared weights — e.g. the corgi in row V1 turns into a generic grey dog):
 
-![forgetting grid](assets/forgetting_grid.jpg)
+![Step 1 forgetting grid](assets/forgetting_grid.jpg)
+
+## Results — Step 2: continual regularization (von Oswald)
+
+The two-stage von-Oswald output regularization (`reg.weight = β`, arXiv:1906.00695) keeps the
+hypernetwork's LoRA output on old concepts stable while new ones are learned. Final / forgetting on
+the same 10-task sequence:
+
+| run | CLIP-T | CLIP-I | DINO | Forgetting (DINO) |
+|---|---|---|---|---|
+| baseline (β=0) | 0.739 | 0.742 | 0.447 | +0.203 |
+| β=0.5 | 0.770 | 0.750 | 0.484 | +0.127 |
+| β=5 | 0.765 | 0.755 | 0.504 | +0.106 |
+| β=50 | 0.765 | 0.755 | 0.510 | +0.090 |
+| β=100 | 0.755 | **0.772** | **0.546** | **+0.069** |
+
+Regularization **monotonically cuts forgetting** (DINO +0.203 → +0.069, ≈ −66%) while *raising*
+final fidelity, with the just-learned quality essentially held. At β=100 our CLIP-I (0.772) is
+within 0.01 of CIDM's reported IA (0.780) — with a generic hypernetwork regularizer, no
+concept-specific consolidation. The β=100 grid keeps each concept on-identity across the sequence:
+
+![Step 2 (β=100) forgetting grid](assets/forgetting_grid_reg.jpg)
+
+```bash
+python -m src.train_cl --config configs/cl_unhype_reg.yaml --reg_weight 100 --output_dir outputs/cl_reg_b100
+```
+
+**Known limitation.** Same-class instances (e.g. two different cats) are only weakly separated by the
+prompt-pooled conditioning (cosine ≈ 0.79 within a class vs ≈ 0.5 across classes), so the later one
+can overwrite the earlier — orthogonal to β.
 
 ## Reusing this repo (for a different approach)
 
