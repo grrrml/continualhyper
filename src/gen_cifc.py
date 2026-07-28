@@ -40,7 +40,8 @@ def _read_prompts(category):
 
 
 @torch.no_grad()
-def gen_concept(bundle, manager, gen_repl, clipt_repl, category, out_dir, n, steps, gscale, seed):
+def gen_concept(bundle, manager, gen_repl, clipt_repl, category, out_dir, n, steps, gscale, seed,
+                task_idx=None, mask_phrase=None, lora_start_frac=0.0):
     prompts = _read_prompts(category)
     sdir = os.path.join(out_dir, "samples")
     os.makedirs(sdir, exist_ok=True)
@@ -50,11 +51,16 @@ def gen_concept(bundle, manager, gen_repl, clipt_repl, category, out_dir, n, ste
         gen_prompt = p.replace("<TOK>", gen_repl)      # generation: "<eval_prefix> V<k> <class>"
         clipt_text = p.replace("<TOK>", clipt_repl)    # CLIP-T candidate: "<eval_prefix> <class>"
         cond_hidden, pooled, _ = bundle.encode_text([gen_prompt])
+        token_mask = None
+        if mask_phrase:
+            from .tokens import token_span_mask
+            token_mask = token_span_mask(bundle.tokenizer, [gen_prompt], mask_phrase)
         for _ in range(n):
             g = torch.Generator(device=bundle.device).manual_seed(seed + count)
             img = ddim_sample(bundle, manager, cond_hidden, uncond_hidden, pooled,
                               num_inference_steps=steps, guidance_scale=gscale, batch_size=1,
-                              generator=g, scheduler=bundle.dpm_scheduler)
+                              generator=g, scheduler=bundle.dpm_scheduler, task_idx=task_idx,
+                              token_mask=token_mask, lora_start_frac=lora_start_frac)
             save_image(img, os.path.join(sdir, f"{count}.jpg"))
             info.append({str(count): clipt_text})
             count += 1
@@ -76,6 +82,13 @@ def parse_args():
                    help="only the final checkpoint over all concepts (no full matrix)")
     p.add_argument("--only_concepts", default=None,
                    help="comma-separated concept_ids to (re)generate; others left untouched")
+    p.add_argument("--lora_scale", type=float, default=1.0,
+                   help="inference-time LoRA strength (1.0 = trained strength)")
+    p.add_argument("--lora_start_frac", type=float, default=0.0,
+                   help="enable LoRA only after this fraction of denoising steps")
+    p.add_argument("--only_tasks", default=None,
+                   help="comma-separated checkpoint indices k to generate (shard the matrix "
+                        "across jobs); default: all")
     return p.parse_args()
 
 
@@ -88,12 +101,25 @@ def main():
     bundle = (load_sd(model_id=cfg["sd_model_id"], device=device, dtype=cfg.get("weight_dtype", "fp32"))
               if cfg.get("sd_model_id") else load_sd(device=device, dtype=cfg.get("weight_dtype", "fp32")))
     manager = build_hyper(bundle, target_modules=tuple(cfg.get("target_modules", DEFAULT_TARGETS)),
+                          n_tasks=len(cfg["concepts"]), task_cond=cfg.get("task_cond"),
                           **cfg.get("hyper", {}))
     manager.eval()
+    manager.lora_scale = float(args.lora_scale)
+    if args.lora_scale != 1.0 or args.lora_start_frac > 0:
+        print(f"[gen] LoRA knobs: scale={args.lora_scale} start_frac={args.lora_start_frac}", flush=True)
 
     concepts = cfg["concepts"]
     n_tasks = len(concepts)
+    tok_cfg = cfg.get("learned_tokens", {}) or {}
+    use_tokens = bool(tok_cfg.get("enabled", False))
+    if use_tokens:
+        from .tokens import add_learned_tokens
+        add_learned_tokens(bundle, [(c.get("identifier", f"V{i + 1}"), c["class_word"])
+                                    for i, c in enumerate(concepts)], init_from_class=False)
     task_ks = [n_tasks - 1] if args.final_only else list(range(n_tasks))
+    if args.only_tasks:
+        keep = {int(x) for x in args.only_tasks.split(",")}
+        task_ks = [k for k in task_ks if k in keep]
     only = set(args.only_concepts.split(",")) if args.only_concepts else None
 
     for k in task_ks:
@@ -101,18 +127,25 @@ def main():
         if not os.path.exists(ckpt):
             print(f"[gen] MISSING {ckpt} — skipping task {k}", flush=True)
             continue
-        load_hyper(manager, ckpt, map_location=str(device))
+        blob = load_hyper(manager, ckpt, map_location=str(device))
+        if use_tokens and blob.get("learned_tokens"):
+            from .tokens import apply_learned_tokens
+            apply_learned_tokens(bundle, blob["learned_tokens"])   # rows as of THIS checkpoint
         for j in range(k + 1):                              # concept j was seen by task k
             c = concepts[j]
             if only is not None and c["concept_id"] not in only:
                 continue                                    # leave already-generated cells untouched
             prefix = c.get("eval_prefix", "").strip()       # e.g. "yellow rubber" (duck), "red" (backpack)
-            ident, cls, cat = f"V{j+1}", c["class_word"], c["category"]
-            gen_repl = f"{prefix} {ident} {cls}".strip()
-            clipt_repl = f"{prefix} {cls}".strip()
+            ident, cls, cat = c.get("identifier", f"V{j+1}"), c["class_word"], c["category"]
+            gen_repl = " ".join(x for x in (prefix, ident, cls) if x)   # ident may be "" (no-id mode)
+            clipt_repl = " ".join(x for x in (prefix, cls) if x)
             out_dir = os.path.join(out_root, f"after_task{k:02d}", f"task{j:02d}_{c['concept_id']}")
             nimg = gen_concept(bundle, manager, gen_repl, clipt_repl, cat, out_dir,
-                               args.num_samples, args.steps, args.guidance_scale, args.seed)
+                               args.num_samples, args.steps, args.guidance_scale, args.seed,
+                               task_idx=j,
+                               mask_phrase=(" ".join(x for x in (ident, cls) if x)
+                                            if cfg.get("token_mask_lora") else None),
+                               lora_start_frac=float(args.lora_start_frac))
             print(f"[gen] after_task{k:02d} / {c['concept_id']} ({cat}, '{gen_repl}'): {nimg} imgs",
                   flush=True)
     print(f"[gen] DONE -> {out_root}", flush=True)
