@@ -53,6 +53,12 @@ class CachedLoRALinear(nn.Module):
             x_L = x_L.expand(x.shape[0], -1, -1)
             x_R = x_R.expand(x.shape[0], -1, -1)
         lora = (x.float() @ x_L.float()) @ x_R.float()
+        mask = hyper.get_token_mask() if hasattr(hyper, "get_token_mask") else None
+        if mask is not None and x.dim() == 3 and mask.shape[-1] == x.shape[1]:
+            m = mask.to(device=lora.device, dtype=lora.dtype)
+            if m.shape[0] == 1 and x.shape[0] > 1:
+                m = m.expand(x.shape[0], -1)
+            lora = lora * m[:, :, None]   # delta only at the concept's token positions
         return out + lora.to(out.dtype)
 
 

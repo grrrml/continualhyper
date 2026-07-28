@@ -26,6 +26,10 @@ def ddim_sample(
     batch_size: int = 1,
     generator: Optional[torch.Generator] = None,
     scheduler=None,
+    task_idx: Optional[int] = None,   # task-conditioning index (learned V_t + ortho basis)
+    token_mask: Optional[torch.Tensor] = None,   # [1,77] LoRA application mask (concept tokens)
+    lora_start_frac: float = 0.0,   # enable LoRA only after this fraction of steps (early steps
+                                    # lay out the prompt's composition, late steps paint identity)
 ) -> torch.Tensor:
     """Returns images in [0,1], shape [batch_size, 3, H, W]."""
     device, dtype = bundle.device, bundle.dtype
@@ -42,11 +46,17 @@ def ddim_sample(
     uncond_seq = uncond_hidden.to(device=device, dtype=dtype).expand(batch_size, -1, -1)
 
     # Timestep-independent LoRA: compute ONCE from the pooled prompt, reuse every step.
-    manager.set_context(clip_pooled.to(device))
+    manager.set_context(clip_pooled.to(device), task_idx=task_idx,
+                        token_mask=token_mask.to(device) if token_mask is not None else None)
     manager.compute_and_cache_loras()
 
-    for t in scheduler.timesteps:
-        manager.enable_lora()
+    steps_list = list(scheduler.timesteps)
+    start_i = int(round(float(lora_start_frac) * len(steps_list)))
+    for i, t in enumerate(steps_list):
+        if i >= start_i:
+            manager.enable_lora()
+        else:
+            manager.disable_lora()
         model_input = scheduler.scale_model_input(latents, t)
         noise_cond = unet(model_input, t, encoder_hidden_states=cond_seq).sample
         with manager.no_lora():
