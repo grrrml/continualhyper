@@ -129,10 +129,13 @@ the same 10-task sequence:
 | β=0.5 | 0.770 | 0.750 | 0.484 | +0.127 |
 | β=5 | 0.765 | 0.755 | 0.504 | +0.106 |
 | β=50 | 0.765 | 0.755 | 0.510 | +0.090 |
-| β=100 | 0.755 | **0.772** | **0.546** | **+0.069** |
+| **β=100** (chosen) | 0.755 | **0.772** | **0.546** | +0.069 |
+| β=200 | 0.769 | 0.757 | 0.521 | +0.065 |
 
-Regularization **monotonically cuts forgetting** (DINO +0.203 → +0.069, ≈ −66%) while *raising*
-final fidelity, with the just-learned quality essentially held. At β=100 our CLIP-I (0.772) is
+Regularization **monotonically cuts forgetting** (DINO +0.203 → +0.069 at β=100, ≈ −66%) while
+*raising* final fidelity, with the just-learned quality essentially held. **β=100 is the sweet
+spot**: at β=200 forgetting barely improves (+0.065) but final fidelity drops (CLIP-I 0.772→0.757,
+DINO 0.546→0.521) as over-regularization suppresses fresh learning. At β=100 our CLIP-I (0.772) is
 within 0.01 of CIDM's reported IA (0.780) — with a generic hypernetwork regularizer, no
 concept-specific consolidation. The β=100 grid keeps each concept on-identity across the sequence:
 
