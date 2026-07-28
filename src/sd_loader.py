@@ -71,7 +71,7 @@ class ModelBundle:
 
     # ------------------------------------------------------------------ encoding
     def encode_text(
-        self, prompts: List[str]
+        self, prompts: List[str], train_tokens: bool = False
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Encode prompts with the frozen CLIP text encoder (UnHype-style conditioning).
 
@@ -82,7 +82,9 @@ class ModelBundle:
                                             LoRA-hypernetwork (UnHype feeds `.pooler_output`).
         attention_mask    : [B, 77]        — 1 for real tokens, 0 for padding.
 
-        CLIP is frozen, so this is always no-grad.
+        CLIP is frozen, so this is no-grad -- unless `train_tokens=True` (learned identifier
+        tokens, option C): then the forward keeps the graph so gradients reach the learned
+        embedding rows (the transformer itself stays frozen).
         """
         batch = self.tokenizer(
             prompts,
@@ -93,8 +95,11 @@ class ModelBundle:
         )
         input_ids = batch.input_ids.to(self.device)
         attention_mask = batch.attention_mask.to(self.device)
-        with torch.no_grad():
+        if train_tokens:
             out = self.text_encoder(input_ids=input_ids)
+        else:
+            with torch.no_grad():
+                out = self.text_encoder(input_ids=input_ids)
         return out.last_hidden_state, out.pooler_output, attention_mask
 
     # ------------------------------------------------------------------ vae
