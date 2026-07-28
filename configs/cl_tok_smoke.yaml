@@ -1,0 +1,41 @@
+# Smoke for learned tokens (option C): 3 tiny tasks incl. a same-class pair + reg on.
+seed: 2024
+resolution: 512
+weight_dtype: fp32
+sd_model_id: stable-diffusion-v1-5/stable-diffusion-v1-5
+output_dir: ./outputs/cl_tok_smoke
+
+hyper:
+  rank: 4
+  head_hidden: 100
+  alpha_init: 1.0
+  learn_alpha: true
+
+learned_tokens:
+  enabled: true
+  init_from_class: true
+  lr: 5.0e-3
+
+target_modules: [attn2.to_k, attn2.to_v]
+
+concepts:
+  - {concept_id: cifc_dog, images_dir: data/CIFC/datasets/images/dog, caption_dir: data/CIFC/datasets/caption/dog, class_word: dog, category: pet, identifier: "<V1>", prompt: "a photo of <V1> dog"}
+  - {concept_id: cifc_cat, images_dir: data/CIFC/datasets/images/cat, caption_dir: data/CIFC/datasets/caption/cat, class_word: cat, category: pet, identifier: "<V2>", prompt: "a photo of <V2> cat"}
+  - {concept_id: cifc_cat2, images_dir: data/CIFC/datasets/images/cat2, caption_dir: data/CIFC/datasets/caption/cat2, class_word: cat, category: pet, identifier: "<V3>", prompt: "a photo of <V3> cat"}
+
+training:
+  steps_per_task: 30
+  batch_size: 2
+  lr: 1.0e-4
+  grad_clip: 1.0
+  log_every: 10
+  num_workers: 2
+
+infer:
+  steps: 25
+  guidance_scale: 7.5
+  n_images: 1
+
+reg:
+  weight: 100.0
+  lookahead_lr: 1.0e-4
