@@ -66,10 +66,17 @@ class _Clip:
 class _Dino:
     def __init__(self, device):
         import timm
+        from torchvision import transforms
         self.m = timm.create_model("vit_small_patch16_224.dino", pretrained=True,
                                    num_classes=0).to(device).eval()
-        cfg = timm.data.resolve_model_data_config(self.m)
-        self.tf = timm.data.create_transform(**cfg, is_training=False)
+        # exact CIDM evaluate.py preprocessing: Resize(256, bicubic) + CenterCrop(224) +
+        # ImageNet norm (timm's auto config would use crop_pct=0.9, i.e. resize 249 -> crop 224)
+        self.tf = transforms.Compose([
+            transforms.Resize(256, interpolation=transforms.InterpolationMode.BICUBIC),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+        ])
         self.device = device
 
     @torch.no_grad()
