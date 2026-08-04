@@ -39,6 +39,9 @@ class ContinualHyperManager(nn.Module):
         self._cache: Dict[str, LoraPair] = {}
         self._token_mask: Optional[torch.Tensor] = None   # [B, 77]; None -> apply to all tokens
         self.lora_scale = 1.0                    # inference-time LoRA strength (fidelity<->editability)
+        self.lora_scale_map = None               # optional [(pattern, scale)]: per-layer-group
+                                                 # strengths (patterns as in target_modules);
+                                                 # first match wins, fallback = lora_scale
         self._ctx: Dict[str, object] = {"pooled": None, "task_idx": None, "token_mask": None}
         self.lora_enabled = True
 
@@ -141,14 +144,23 @@ class ContinualHyperManager(nn.Module):
         cache: Dict[str, LoraPair] = {}
         for name in self.layer_names:
             _, x_L, x_R = self.heads[_key(name)](cond)          # [B,in,r], [B,r,out]
-            if self.lora_scale != 1.0:
-                x_L = x_L * self.lora_scale
+            sc = self._scale_for(name)
+            if sc != 1.0:
+                x_L = x_L * sc
             cache[name] = (x_L, x_R)
         self._cache = cache
         self._token_mask = token_mask
 
     def get_token_mask(self) -> Optional[torch.Tensor]:
         return self._token_mask
+
+    def _scale_for(self, layer_name: str) -> float:
+        if self.lora_scale_map:
+            from .injection import _match
+            for pattern, sc in self.lora_scale_map:
+                if _match(layer_name, pattern):
+                    return float(sc)
+        return self.lora_scale
 
     def get_cached_lora(self, layer_name: str) -> Optional[LoraPair]:
         return self._cache.get(layer_name)
@@ -217,6 +229,7 @@ def build_hyper(
     wrappers = inject_lora(bundle.unet, target_modules)
     if not wrappers:
         raise RuntimeError(f"inject_lora matched 0 modules for targets {target_modules}")
+    print(f"[hyper] {len(wrappers)} LoRA layers for targets {list(target_modules)}", flush=True)
     for name, wrapper in wrappers:
         head = HyperHead(
             in_dim=wrapper.in_features,

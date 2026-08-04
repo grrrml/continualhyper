@@ -84,6 +84,9 @@ def parse_args():
                    help="comma-separated concept_ids to (re)generate; others left untouched")
     p.add_argument("--lora_scale", type=float, default=1.0,
                    help="inference-time LoRA strength (1.0 = trained strength)")
+    p.add_argument("--lora_scale_map", default=None,
+                   help='per-group scales, e.g. "attn2.to_k=0.4,attn2.to_v=0.4,attn2.to_q=0.8"; '
+                        'patterns as in target_modules, fallback --lora_scale')
     p.add_argument("--lora_start_frac", type=float, default=0.0,
                    help="enable LoRA only after this fraction of denoising steps")
     p.add_argument("--only_tasks", default=None,
@@ -105,8 +108,12 @@ def main():
                           **cfg.get("hyper", {}))
     manager.eval()
     manager.lora_scale = float(args.lora_scale)
-    if args.lora_scale != 1.0 or args.lora_start_frac > 0:
-        print(f"[gen] LoRA knobs: scale={args.lora_scale} start_frac={args.lora_start_frac}", flush=True)
+    if args.lora_scale_map:
+        manager.lora_scale_map = [(kv.split("=")[0], float(kv.split("=")[1]))
+                                  for kv in args.lora_scale_map.split(",")]
+    if args.lora_scale != 1.0 or args.lora_start_frac > 0 or args.lora_scale_map:
+        print(f"[gen] LoRA knobs: scale={args.lora_scale} map={args.lora_scale_map} "
+              f"start_frac={args.lora_start_frac}", flush=True)
 
     concepts = cfg["concepts"]
     n_tasks = len(concepts)
