@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import glob
 import os
+import random
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -43,11 +44,21 @@ class ConceptSpec:
         return self.prompt or f"a photo of {self.replacement}"
 
 
-def _load_image(path: str, resolution: int) -> torch.Tensor:
+def _load_image(path: str, resolution: int, augment: bool = False) -> torch.Tensor:
     img = Image.open(path).convert("RGB")
     w, h = img.size
-    s = min(w, h)
-    img = img.crop(((w - s) // 2, (h - s) // 2, (w - s) // 2 + s, (h - s) // 2 + s))
+    if augment:
+        # anti-scene-overfit augmentation: random square crop (80-100% of the short side,
+        # random position) + random horizontal flip; identity survives, exact scene layout doesn't
+        s = int(min(w, h) * random.uniform(0.8, 1.0))
+        x0 = random.randint(0, w - s)
+        y0 = random.randint(0, h - s)
+        img = img.crop((x0, y0, x0 + s, y0 + s))
+        if random.random() < 0.5:
+            img = img.transpose(Image.FLIP_LEFT_RIGHT)
+    else:
+        s = min(w, h)
+        img = img.crop(((w - s) // 2, (h - s) // 2, (w - s) // 2 + s, (h - s) // 2 + s))
     img = img.resize((resolution, resolution), Image.BICUBIC)
     arr = torch.from_numpy(np.asarray(img, dtype=np.float32) / 255.0).permute(2, 0, 1)
     return arr * 2.0 - 1.0  # [-1,1], [3,H,W]
@@ -56,9 +67,10 @@ def _load_image(path: str, resolution: int) -> torch.Tensor:
 class ConceptDataset(Dataset):
     """One concept's images, each paired with its CIDM caption (class word -> 'V<k> <class>')."""
 
-    def __init__(self, spec: ConceptSpec, resolution: int = 512):
+    def __init__(self, spec: ConceptSpec, resolution: int = 512, augment: bool = False):
         self.spec = spec
         self.resolution = resolution
+        self.augment = augment
         self.paths = sorted(
             p for p in glob.glob(os.path.join(spec.images_dir, "*")) if p.lower().endswith(_IMG_EXTS)
         )
@@ -83,7 +95,8 @@ class ConceptDataset(Dataset):
     def __getitem__(self, idx: int) -> dict:
         path = self.paths[idx % len(self.paths)]
         stem = os.path.splitext(os.path.basename(path))[0]
-        return {"pixel_values": _load_image(path, self.resolution), "caption": self._caption(stem)}
+        return {"pixel_values": _load_image(path, self.resolution, self.augment),
+                "caption": self._caption(stem)}
 
 
 def collate_fn(batch: List[dict]) -> dict:

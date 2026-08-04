@@ -192,7 +192,8 @@ def main():
                         "index": f"V{k + 1}"}.get(mode, spec.diag_prompt)
             _, pooled_canon, _ = bundle.encode_text([key_text])
             manager.set_canonical(k, pooled_canon[0])
-        loader = DataLoader(ConceptDataset(spec, resolution), batch_size=batch_size, shuffle=True,
+        loader = DataLoader(ConceptDataset(spec, resolution, augment=bool(train.get("augment", False))),
+                            batch_size=batch_size, shuffle=True,
                             drop_last=True, collate_fn=collate_fn,
                             num_workers=int(train.get("num_workers", 2)))
         data_iter = itertools.cycle(loader)
