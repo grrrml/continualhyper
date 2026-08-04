@@ -20,6 +20,15 @@ import torch.nn as nn
 DEFAULT_TARGETS: Tuple[str, ...] = ("attn2.to_k", "attn2.to_v")
 
 
+def _match(full_name: str, target: str) -> bool:
+    """Suffix match ("attn2.to_k"), optionally block-scoped via "*": "up_blocks*attn2.to_k"
+    requires the name to START with the prefix and END with the suffix."""
+    if "*" in target:
+        prefix, suffix = target.split("*", 1)
+        return full_name.startswith(prefix) and full_name.endswith(suffix)
+    return full_name.endswith(target)
+
+
 class CachedLoRALinear(nn.Module):
     def __init__(self, original_linear: nn.Linear, layer_name: str = ""):
         super().__init__()
@@ -75,7 +84,7 @@ def inject_lora(
     wrapped: List[Tuple[str, CachedLoRALinear]] = []
     for child_name, child in module.named_children():
         full_name = f"{name}.{child_name}" if name else child_name
-        if isinstance(child, nn.Linear) and any(full_name.endswith(t) for t in target_modules):
+        if isinstance(child, nn.Linear) and any(_match(full_name, t) for t in target_modules):
             wrapper = CachedLoRALinear(child, layer_name=full_name).to(next(child.parameters()).device)
             setattr(module, child_name, wrapper)
             wrapped.append((full_name, wrapper))
