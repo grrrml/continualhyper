@@ -2,7 +2,7 @@
 
 > Żywy dokument-pamięć projektu: syntetyczny obraz "gdzie jesteśmy i skąd to wiemy".
 > Aktualizowany po każdym domknięciu wątku (werdykt, faza, decyzja ramowa).
-> Szczegółowy dziennik pomiarów i odrzuceń: `assets/STATUS.md`. Stan na: **2026-08-20**.
+> Szczegółowy dziennik pomiarów i odrzuceń: `assets/STATUS.md`. Stan na: **2026-08-31**.
 
 ---
 
@@ -142,18 +142,55 @@ OBA kryteria GO spełnione. Dalej: drugi seed (formalizacja), potem kompozycja w
 
 ## 7. Infrastruktura (twarde lekcje)
 
-- GPU przez `sbatch`, konto z `scripts/pick_account.sh` (plgideascvgroup1 wykluczony).
+- GPU przez `sbatch`, konto z `scripts/pick_account.sh`. **Zmiana 2026-08-31:** `plgideascvgroup1`
+  odblokowany, a skrypt rozpoznaje klaster po hostname (`-gpu-a100` na Athenie, `-gpu-gh200` na
+  Heliosie) i preferuje grant wygasający najszybciej. Dotąd był martwym kodem — żaden z 11 runnerów
+  go nie wywoływał, wszystkie miały zaszyte `--account=plgideascv1cl-gpu-a100`, **a ten grant
+  zakończył się 2026-08-26**, więc te zadania nie wystartują.
 - Węzły MAJĄ internet (wandb online); `HF_HUB_OFFLINE=1` w runnerach celowo → nowe checkpointy
   wymagają prefetchu na login-nodzie.
 - `TMPDIR=/tmp` we wszystkich runnerach — quota inode'ów $SCRATCH bywa pełna (inne projekty).
 - Skrypty sbatch TYLKO w `scripts/` (scratchpad sesji jest czyszczony/niewidoczny z węzłów).
 - venv wspólny z UnHype (python 3.11; instalacje przez `uv pip`, venv nie ma pipa; uwaga na
-  cudze pakiety w ~/.local dla pythona 3.9 — mylą `pip list`).
+  cudze pakiety w ~/.local dla pythona 3.9 — mylą `pip list`). **To jest bomba zegarowa:**
+  `scripts/sbatch_cl.sh` ma `VENV=../unlearning/UnHype/.venv`, a `unlearning` leży w katalogu
+  grantu `plggrecontext`, który **wygasa 2026-09-08**. Na Athenie nie ma zamiennika — trzeba zbudować
+  własny venv w `$SCRATCH/venvs/`, jak zrobione na Heliosie (patrz niżej).
 - Smoke przed każdym pełnym treningiem + strażnik (weryfikacja gradientów w checkpoincie,
   auto-scancel łańcucha); łańcuchy jobów na `--dependency=afterok`.
 - Nie commitować/pushować bez zgody. Przy zmianie headline'u lub dużych wydatkach GPU — pytać.
 - Ocena wizualna: nigdy z jednej próbki; tożsamość tylko wobec zdjęć referencyjnych; przed
   diagnozą modelu sprawdzić pipeline renderowania (SDXL@512 = kafelki).
+
+### Port na Helios (GH200) — 2026-08-31
+
+Działa, z jednym zastrzeżeniem o numeryce. Stan:
+
+| | |
+|---|---|
+| klaster | `ssh helios`, partycja `plgrid-gpu-gh200`, limit 2 dni, 110 węzłów × 4 GPU |
+| konto | `plgideascvgroup1-gpu-gh200`, ważne do 2027-03-23, ~35 450 z 50 000 h |
+| GPU | NVIDIA GH200 120GB, capability 9.0 |
+| venv | `$SCRATCH/venvs/continualhyper-helios` — **samodzielny**, nie dzielony z UnHype |
+| runnery | `scripts/sbatch_helios_venv.sh` (budowa), `scripts/sbatch_helios_smoke.sh` |
+
+Helios ma **login node x86_64 (AMD EPYC 9654), a węzły GPU aarch64 (Grace)** — dlatego venv musi
+powstawać w jobie, nie na login-nodzie, i dlatego Anaconda tam nie działa. `sbatch` wymaga
+`#!/bin/bash -l`, bez tego `module load` nie inicjalizuje się. Moduł: `ML-bundle/24.06a`
+(**nie** domyślny `25.04` — ten ma 4 koła i nie ma torchvision).
+
+**Numeryka — do zweryfikowania przed porównywaniem wyników między klastrami.**
+`requirements.txt` pinuje `torch==2.7.1` / `torchvision==0.22.1`; kół aarch64 dla tych wersji nie ma
+(max `2.7.0rc9` / `0.21.0`). Spójna dostępna para to **torch 2.6.0+cu124.post3 + torchvision
+0.21.0+cu124torch260**, czyli zejście o wersję minor. Reszta stosu trafia w piny co do numeru:
+diffusers 0.30.0, transformers 4.44.2, timm 1.0.24, numpy 1.26.4. Zanim uznamy liczby z Heliosa
+za porównywalne z Atheną, trzeba przepuścić config o znanym wyniku i porównać — zejście wersji jest
+mniej bezpieczne niż podniesienie, mimo że `requirements.txt` dopuszcza „newer minor versions".
+
+Smoke (job 21530405): `src.*` importuje się, SD-1.5 wczytany, 25 kroków 512² w **1,7 s**.
+
+**Czego na Heliosie nie ma:** danych. `data/CIFC/` i `outputs/` są na Athenie. Smoke przeszedł, bo
+pobierał SD-1.5 z HF — realny trening nie ma tam czego czytać.
 
 ## 8. Konwencja aktualizacji
 

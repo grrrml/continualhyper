@@ -31,3 +31,10 @@ scripts/sbatch_*.sh
 
 # katalog roboczy poterow (nie commitujemy)
 work/
+
+# wyniki sciagane z klastra przez 04-sync-results.ps1.
+# BEZ ukosnika: konwencja z CLAUDE.md to symlinki do $SCRATCH, a wzorzec
+# 'results/' pasuje wylacznie do katalogu - symlinku nie lapie.
+results
+outputs
+work

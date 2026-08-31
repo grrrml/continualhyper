@@ -1,0 +1,29 @@
+# Wszystko, co wykonuje sie na Linuksie, MUSI miec LF. Plik .sh z CRLF pada na
+# klastrze komunikatem "bad interpreter: /bin/bash^M", ktory nie mowi nic o
+# koncach linii - to jedna z tych awarii, ktore kosztuja godzine zgadywania.
+* text=auto eol=lf
+
+*.sh      text eol=lf
+*.sbatch  text eol=lf
+*.py      text eol=lf
+*.yaml    text eol=lf
+*.yml     text eol=lf
+Makefile  text eol=lf
+
+# Skrypty PowerShella uruchamiane na Windowsie - CRLF jest tam poprawny.
+*.ps1     text eol=crlf
+
+# Binaria: bez zadnej konwersji.
+*.png     binary
+*.jpg     binary
+*.jpeg    binary
+*.pdf     binary
+*.pt      binary
+*.pth     binary
+*.ckpt    binary
+*.safetensors binary
+*.arrow   binary
+*.npz     binary
+*.tar     binary
+*.tgz     binary
+*.zip     binary
