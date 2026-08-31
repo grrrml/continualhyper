@@ -41,7 +41,7 @@ echo "=============== koła aarch64 z $WHEELS"
 for w in \
   torch-2.6.0+cu124.post3-cp311-cp311-linux_aarch64.whl \
   torchvision-0.21.0+cu124torch260-cp311-cp311-linux_aarch64.whl \
-  triton-3.1.0-cp311-cp311-linux_aarch64.whl \
+  triton-3.1.0-cp311-cp311-linux_aarch64.whl ; do
   if [ -f "$WHEELS/$w" ]; then
     echo "--- $w"
     pip install --quiet "$WHEELS/$w"
