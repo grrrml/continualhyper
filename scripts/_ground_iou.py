@@ -60,6 +60,11 @@ ap.add_argument("--dino_floor", type=float, default=0.35,
 ap.add_argument("--seg_dir", default="data/seg", help="wycinki referencyjne do koloru")
 ap.add_argument("--prefix", action="store_true",
                 help="promptuj z eval_prefix ('yellow rubber duck toy') zamiast golo")
+ap.add_argument("--bg_ref", action="store_true",
+                help="dla kazdej generacji policz TE SAMA bez ramki (to samo ziarno) i podaj "
+                     "podobienstwo DINO TLA (obiekt zamaskowany): 1.0 = ramka nie ruszyla tla. "
+                     "Energia gradientu mierzy lokalny kontrast, nie zawartosc sceny - ostra "
+                     "krawedz pustej sciany punktuje wyzej niz rozmyty park.")
 ap.add_argument("--seed0", type=int, default=31337,
                 help="baza ziaren generacji; inna wartosc = niezalezna probka tej samej "
                      "konfiguracji, czyli szum SAMPLINGOWY metryki (nie treningowy)")
@@ -181,6 +186,14 @@ def bg_stats(img, dmask):
     return float(grad[bg].mean()), float(g[bg].std())
 
 
+def mask_out(img, dmask):
+    """Obiekt zamalowany szarym: zostaje samo tlo, wiec DINO patrzy na scene, nie na podmiot."""
+    out = img.clone()
+    if dmask is not None:
+        out[:, dmask] = 0.5
+    return out
+
+
 @torch.no_grad()
 def dino_feat(pil):
     return Fn.normalize(dino.m(dino.tf(pil).unsqueeze(0).to("cuda")), dim=-1)
@@ -232,7 +245,7 @@ def crops(img, mode):
 
 
 KEYS = ("iou", "hit", "con", "fill", "q", "n", "ndet", "dino", "dcol", "ncol",
-        "bgg", "bgs", "nbg")
+        "bgg", "bgs", "nbg", "bgsim", "nbgsim")
 for kap, sched, conf in GRID:
     manager.ground_gain_base = kap
     manager.ground_sched_frac = sched
@@ -285,6 +298,24 @@ for kap, sched, conf in GRID:
                         gcol_n += 1
                         st["dcol"] += float(np.linalg.norm(gc - rcol))
                         st["ncol"] += 1
+                if a.bg_ref:
+                    # to samo ziarno, ten sam prompt, ramka = pelny kadr => grounding bez adresu
+                    keep = (manager.cond_box, manager.ground_confine)
+                    manager.cond_box = None
+                    manager.ground_confine = 0.0
+                    g2 = torch.Generator(device="cuda").manual_seed(a.seed0 + i)
+                    ref_img = ddim_sample(bundle, manager, ch, uh, pooled,
+                                          num_inference_steps=a.steps, guidance_scale=7.5,
+                                          generator=g2, task_idx=j, token_mask=tm)[0]
+                    manager.cond_box, manager.ground_confine = keep
+                    _, rmask, _ = detect(ref_img, to_pil(ref_img),
+                                         HINT.get(c["concept_id"]), ref)
+                    both = dmask if rmask is None else (
+                        dmask | rmask if dmask is not None else rmask)
+                    f1 = dino_feat(to_pil(mask_out(img, both)))
+                    f2 = dino_feat(to_pil(mask_out(ref_img, both)))
+                    st["bgsim"] += float((f1 @ f2.t()).item())
+                    st["nbgsim"] += 1
                 bs = bg_stats(img, dmask)
                 if bs is not None:
                     st["bgg"] += bs[0]
@@ -302,7 +333,9 @@ for kap, sched, conf in GRID:
               f"wypelnienie {st['fill']/nd:.2f} | DINO {st['dino']/n:.4f} | "
               f"det {int(st['ndet'])}/{int(st['n'])} {paths}", flush=True)
         nbg = max(1.0, st["nbg"])
-        print(f"  {'':<16} tlo grad {st['bgg']/nbg:.4f} | tlo std {st['bgs']/nbg:.4f}", flush=True)
+        extra = (f" | tlo sim {st['bgsim']/max(1.0, st['nbgsim']):.4f}" if st["nbgsim"] else "")
+        print(f"  {'':<16} tlo grad {st['bgg']/nbg:.4f} | tlo std {st['bgs']/nbg:.4f}{extra}",
+              flush=True)
         rf = ref_fill(c)
         if rf is not None:
             print(f"  {'':<16} obiekt w kadrze referencji: {rf:.2f}", flush=True)
@@ -320,5 +353,6 @@ for kap, sched, conf in GRID:
           f"kolor dRGB {agg['dcol']/max(1.0, agg['ncol']):.3f} | "
           f"tlo grad {agg['bgg']/max(1.0, agg['nbg']):.4f} | "
           f"tlo std {agg['bgs']/max(1.0, agg['nbg']):.4f} | "
-          f"det {int(agg['ndet'])}/{int(agg['n'])}", flush=True)
+          + (f"tlo sim {agg['bgsim']/max(1.0, agg['nbgsim']):.4f} | " if agg['nbgsim'] else "")
+          + f"det {int(agg['ndet'])}/{int(agg['n'])}", flush=True)
 print("IOU_DONE", flush=True)
