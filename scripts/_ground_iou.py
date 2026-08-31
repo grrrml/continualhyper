@@ -60,6 +60,10 @@ ap.add_argument("--dino_floor", type=float, default=0.35,
 ap.add_argument("--seg_dir", default="data/seg", help="wycinki referencyjne do koloru")
 ap.add_argument("--prefix", action="store_true",
                 help="promptuj z eval_prefix ('yellow rubber duck toy') zamiast golo")
+ap.add_argument("--bootstrap", type=int, default=0,
+                help="liczba pierwszych krokow, w ktorych ZEWNETRZE ramki jest zaszumionym tlem")
+ap.add_argument("--bg_dir", default="data/backgrounds",
+                help="naturalne tla do bootstrapu; pusty string = plaska szarosc")
 ap.add_argument("--self_leak", type=float, default=-1.0,
                 help="ograniczenie SELF-attention (attn1) do ramki: 0 = pelna izolacja, "
                      "1 = brak kary (KONTROLA, bo sam procesor zmienia implementacje uwagi "
@@ -123,6 +127,24 @@ print(f"[cfg] ckpt {a.ckpt} | boxes {a.boxes} | n {a.n} | gain_res {GAIN_RES} | 
       flush=True)
 if a.out:
     os.makedirs(a.out, exist_ok=True)
+
+
+BGS = sorted(glob.glob(os.path.join(a.bg_dir, "*"))) if (a.bootstrap > 0 and a.bg_dir) else []
+if a.bootstrap > 0:
+    print(f"[cfg] bootstrap {a.bootstrap} krokow | tla: "
+          f"{len(BGS) if BGS else 'plaska szarosc'}", flush=True)
+
+
+@torch.no_grad()
+def bg_latent(idx):
+    """Latent naturalnego tla do bootstrapu. Plaska szarosc (domyslna w compose_sample_regions)
+    jest wlasnie tym artefaktem, ktory probujemy usunac, wiec bierzemy realna scene."""
+    if not BGS:
+        return None
+    im = Image.open(BGS[idx % len(BGS)]).convert("RGB").resize((512, 512), Image.BICUBIC)
+    t = torch.from_numpy(np.asarray(im, dtype=np.float32) / 127.5 - 1.0)
+    t = t.permute(2, 0, 1).unsqueeze(0).to("cuda", torch.float16)
+    return bundle.encode_images(t)
 
 
 def to_xyxy(box, W, H):
@@ -282,7 +304,9 @@ for kap, sched, conf in GRID:
             for i in range(a.n):
                 g = torch.Generator(device="cuda").manual_seed(a.seed0 + i)
                 img = ddim_sample(bundle, manager, ch, uh, pooled, num_inference_steps=a.steps,
-                                  guidance_scale=7.5, generator=g, task_idx=j, token_mask=tm)[0]
+                                  guidance_scale=7.5, generator=g, task_idx=j, token_mask=tm,
+                                  bootstrap_steps=a.bootstrap,
+                                  bootstrap_bg=bg_latent(j * 97 + i) if a.bootstrap else None)[0]
                 H, W = img.shape[-2:]
                 pil = to_pil(img)
                 sims = {k: float((dino_feat(to_pil(v)) @ ref.t()).item())

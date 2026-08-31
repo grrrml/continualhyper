@@ -191,6 +191,11 @@ class RegionalSelfAttnProcessor:
 
     `leak` in [0,1] keeps a fraction of cross-region attention so global coherence (lighting,
     perspective) survives; 0 = full isolation, which is what U+1-pass methods get for free.
+
+    PULAPKA (zmierzona 2026-08-31): `leak` jest BEZCZYNNE, dopoki `strength=None`, bo kara
+    wynosi wtedy (1-allow)*(1-leak)*1e4 i po softmaxie kazda wartosc ponizej leak=1 jest
+    po prostu -inf. leak=0.5 dal liczby identyczne z leak=0.0 co do czwartego miejsca.
+    Zeby przeciek mial znaczenie, trzeba podac MIEKKIE `strength` (rzedu jednostek logitu).
     """
 
     def __init__(self, boxes, leak: float = 0.0, strength: Optional[float] = None,

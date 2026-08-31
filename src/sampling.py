@@ -32,6 +32,9 @@ def ddim_sample(
                                     # lay out the prompt's composition, late steps paint identity)
     latents: Optional[torch.Tensor] = None,   # pre-drawn latents (per-image generators); when
                                               # given, no sampling happens here
+    bootstrap_steps: int = 0,          # przez pierwsze K krokow ZEWNETRZE ramki jest zaszumionym
+                                       # tlem, wiec podmiot nie ma gdzie powstac poza ramka
+    bootstrap_bg: Optional[torch.Tensor] = None,   # latent tla [1,C,h,w]; None -> plaska szarosc
 ) -> torch.Tensor:
     """Returns images in [0,1], shape [batch_size, 3, H, W]."""
     device, dtype = bundle.device, bundle.dtype
@@ -68,6 +71,25 @@ def ddim_sample(
     steps_list = list(scheduler.timesteps)
     start_i = int(round(float(lora_start_frac) * len(steps_list)))
     compose = getattr(manager, "compose_tasks", None)   # LoRA-C: average eps over adapters
+    # Bootstrap (MultiDiffusion / CIDM rownanie 5): kary w uwadze maja zmierzony pulap
+    # (tail-confine +17 pp i nasycenie), a izolacja self-attention pogarsza sprawe, bo
+    # zewnetrze nie dziedziczy obiektu biernie - generuje go samo. Tu odbieramy mu material:
+    # przez pierwsze K krokow poza ramka stoi ZASZUMIONE TLO, wiec trajektoria zobowiazuje sie
+    # tam do tla przy najwyzszym szumie, kiedy uklad sie rozstrzyga. Tlo naturalne, nie plaska
+    # szarosc: plaskie tlo jest wlasnie tym artefaktem, ktory probujemy usunac.
+    bs_mask = None
+    if bootstrap_steps > 0 and getattr(manager, "cond_box", None) is not None:
+        cx, cy, bw, bh = manager.cond_box
+        bs_mask = torch.zeros(1, 1, lh, lw, device=device, dtype=dtype)
+        y0, y1 = int((cy - bh / 2) * lh), max(int((cy - bh / 2) * lh) + 1, int(round((cy + bh / 2) * lh)))
+        x0, x1 = int((cx - bw / 2) * lw), max(int((cx - bw / 2) * lw) + 1, int(round((cx + bw / 2) * lw)))
+        bs_mask[:, :, y0:y1, x0:x1] = 1.0
+        if bootstrap_bg is None:
+            flat = torch.full((1, 3, height, width), 0.5, device=device, dtype=dtype)
+            bootstrap_bg = (bundle.vae.encode(flat * 2 - 1).latent_dist.mean
+                            * bundle.vae.config.scaling_factor)
+        bootstrap_bg = bootstrap_bg.to(device=device, dtype=dtype)
+
     for i, t in enumerate(steps_list):
         hook = getattr(manager, "_step_hook", None)
         if hook is not None:                # composition: refresh region masks from attention
@@ -89,6 +111,11 @@ def ddim_sample(
         if time_cond:                       # adapter depends on t -> refresh the cache
             manager.cond_t = float(t) / n_train_t
             manager.compute_and_cache_loras()
+        if bs_mask is not None and i < bootstrap_steps:
+            noise_bg = torch.randn(bootstrap_bg.shape, generator=generator, device=device,
+                                   dtype=dtype)
+            bg_t = scheduler.add_noise(bootstrap_bg, noise_bg, t.reshape(1))
+            latents = latents * bs_mask + bg_t.expand_as(latents) * (1 - bs_mask)
         model_input = scheduler.scale_model_input(latents, t)
         if compose:
             preds = []
