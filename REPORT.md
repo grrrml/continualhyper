@@ -174,16 +174,27 @@ z 2026-08-20 (n=3, ziarna 31337):
 | **nocap + tail3** | 75% | 0.77 | **1.35** | 0.7076 | **0.161** | 0.0993 | 0.1307 |
 | nocap + κ=2/s=0.3 + tail3 | 56% | 0.70 | 1.57 | 0.7268 | 0.128 | — | — |
 
+**Kontrola bez ramki** (κ=1, pełny kadr = protokół bazowy, 42 generacje): base DINO 0.7744,
+dRGB 0.171, tło grad 0.0702, tło std 0.1763 · nocap DINO 0.7898, dRGB **0.103**, tło grad
+0.0724, tło std **0.1836**. Czyli **`attr_strip` poprawia protokół BAZOWY, nie tylko wersję
+z ramką**: kolor −40%, DINO +0.015 bez żadnego groundingu. To jest poprawka metody, nie
+groundingu, i to ona uzasadnia uczynienie nocap wersją główną.
+
 **(e) Ostrzeżenia metodologiczne, które dotyczą wstecz.**
 1. **Szum IoU>0.5 to do ~10 pp**, nie 1 pp: ten sam checkpoint na świeżych ziarnach dał base
    62% → 52%, nocap 37% → 38%. Przy 168 próbkach błąd dwumianowy to ~3.9 pp, a próbki w obrębie
    konceptu są skorelowane. Pojedyncze pomiary n=3 są orientacyjne; różnica base/nocap na
    placemencie po przejściu na n=6 spadła z 25 pp do **14 pp** (52% vs 38%), a różnica
    wypełnienia (1.60 vs 1.78) **zniknęła** (1.75 vs 1.76) — była szumem.
-2. **Metryka tła i oko się nie zgadzają.** Wzrokowo `nocap+tail` ma najbogatsze tła, a
-   `tło grad` stawia je niżej niż base bez kary. Energia gradientu mierzy lokalny kontrast, nie
-   zawartość sceny: ostra krawędź pustej ściany punktuje wyżej niż rozmyty park. Rozstrzyga
-   `--bg_ref` (podobieństwo DINO tła do generacji bez ramki na tym samym ziarnie).
+2. **`tło grad` jest metryką mylącą, używać `tło std`.** Rozstrzygnęła kontrola bez ramki:
+   `tło grad` **bez** ramki wynosi 0.070, czyli MNIEJ niż każda konfiguracja z ramką
+   (0.099–0.110) — płaska ściana z ostrą krawędzią bije rozmyte bokeh zbliżenie, więc gradient
+   nie mierzy bogactwa tła. `tło std` układa się zgodnie z oceną wzrokową i z kierunkiem
+   artefaktu: bez ramki 0.176–0.184 > nocap 0.150 > base 0.139 > nocap+tail 0.131 >
+   base+tail 0.125. Wniosek liczbowy: ramka z wstrzykiem κ zabiera **15–25% zróżnicowania
+   tła**, kara na ogonie kolejne ~10%, a nocap część odzyskuje. Artefakt płaskich teł jest
+   zmniejszony, nie usunięty. Dodatkowo `--bg_ref` (podobieństwo DINO tła do generacji bez
+   ramki na tym samym ziarnie) — w toku.
 3. **Duplikacja podmiotu jest niewidoczna dla IoU.** W `base+tail` na drugim ziarnie kaczka ma
    dwa dzioby, a kot jest podwojony; dobra ramka detekcji tego nie karze. To dodatkowy powód,
    dla którego `base+tail` (79%) jest gorszy od `nocap+tail` (75%) wbrew liczbie.
