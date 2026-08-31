@@ -18,9 +18,16 @@ _ap.add_argument("--sched", type=float, default=1.0)
 _ap.add_argument("--out", default="assets/figures/ground_grid_gsa.jpg")
 _ap.add_argument("--scene", default="", help="dopisek sceny do promptu, np. 'on a beach'")
 _ap.add_argument("--quads", action="store_true", help="ramki = 4 cwiartki zamiast polowek")
+_ap.add_argument("--config", default="configs/phaseP/P_ground_gsa.yaml")
+_ap.add_argument("--ckpt", default="outputs/phaseP/P_ground_gsa/hyper.pt")
+_ap.add_argument("--confine", type=float, default=0.0, help="kara logitu poza ramka (tail)")
+_ap.add_argument("--bootstrap", type=int, default=0, help="kroki zajecia zewnetrza tlem")
+_ap.add_argument("--scaffold_steps", type=int, default=0,
+                 help="kroki generacji rusztowania tla z promptu (bez plikow wejsciowych)")
+_ap.add_argument("--n", type=int, default=0, help="probki na (koncept, ramka); 0 = domyslne")
 _a = _ap.parse_args()
-CKPT = "outputs/phaseP/P_ground_gsa/hyper.pt"
-CFGP = "configs/phaseP/P_ground_gsa.yaml"
+CKPT = _a.ckpt
+CFGP = _a.config
 N = 2                                        # probki na (koncept, strona)
 BOXES = {"L": (0.25, 0.5, 0.5, 1.0), "P": (0.75, 0.5, 0.5, 1.0)}
 if _a.quads:
@@ -35,7 +42,26 @@ manager = build_hyper(bundle, target_modules=tuple(cfg.get("target_modules", DEF
                       **cfg.get("hyper", {}))
 load_hyper(manager, CKPT, map_location="cuda"); manager.eval(); manager.lora_scale = 0.7
 manager.ground_gain_base = _a.gain; manager.ground_sched_frac = _a.sched
+manager.ground_confine = _a.confine
+manager.ground_confine_tail = _a.confine > 0
 set_grounded(bundle.unet, manager)
+if _a.n:
+    N = _a.n
+
+
+@torch.no_grad()
+def _scaffold(prompt_txt, cls_txt, j, i):
+    """Rusztowanie tla z PROMPTU (koncept wyciety), bez LoRA i groundingu."""
+    bgp = " ".join((prompt_txt.replace(cls_txt, " ")).split())
+    chb, pb, _ = bundle.encode_text([bgp])
+    ub, _, _ = bundle.encode_text([""])
+    keep = (manager.lora_scale, manager.cond_box, manager.ground_gain_base)
+    manager.lora_scale, manager.cond_box, manager.ground_gain_base = 0.0, None, 0.0
+    gb = torch.Generator(device="cuda").manual_seed(31337 + i)
+    im = ddim_sample(bundle, manager, chb, ub, pb, num_inference_steps=_a.scaffold_steps,
+                     guidance_scale=7.5, generator=gb, task_idx=j, token_mask=None)[0]
+    manager.lora_scale, manager.cond_box, manager.ground_gain_base = keep
+    return bundle.encode_images(im.unsqueeze(0) * 2 - 1)
 
 rows = []
 for j, c in enumerate(cfg["concepts"]):
@@ -51,7 +77,10 @@ for j, c in enumerate(cfg["concepts"]):
         for i in range(N):
             g = torch.Generator(device="cuda").manual_seed(31337 + i)
             img = ddim_sample(bundle, manager, ch, uh, pooled, num_inference_steps=30,
-                              guidance_scale=7.5, generator=g, task_idx=j, token_mask=tm)[0]
+                              guidance_scale=7.5, generator=g, task_idx=j, token_mask=tm,
+                              bootstrap_steps=_a.bootstrap,
+                              bootstrap_bg=(_scaffold(prompt, cls, j, i)
+                                            if _a.scaffold_steps else None))[0]
             pil = Image.fromarray((img.permute(1, 2, 0).clamp(0, 1) * 255).byte().cpu().numpy())
             W, H = pil.size; cx, cy, bw, bh = box
             ImageDraw.Draw(pil).rectangle(
