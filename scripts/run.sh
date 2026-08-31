@@ -56,7 +56,10 @@ if [ -n "${GPUS:-}" ]; then
   echo "== zasoby    : ${GPUS}x GPU, $(( CPUS_PER_GPU * GPUS )) cpu, $(( MEMNUM * GPUS ))G"
 fi
 
-CMD=(sbatch --account="$ACCOUNT" --partition="$PARTITION" "${RES[@]}")
+# --chdir tez nadpisujemy: 310 skryptow ma tam zaszyta sciezke klonu na pr2
+# (katalog grantu plggrecontext, wygasa 2026-09-08). Bez tego zadanie startuje
+# w katalogu, ktorego nie ma, i pada na pierwszym relatywnym 'source .venv/...'.
+CMD=(sbatch --account="$ACCOUNT" --partition="$PARTITION" --chdir="$REPO" "${RES[@]}")
 [ -n "${SBATCH_EXTRA:-}" ] && read -ra EXTRA <<< "$SBATCH_EXTRA" && CMD+=("${EXTRA[@]}")
 CMD+=("$JOB" "$@")
 

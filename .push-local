@@ -1,0 +1,9 @@
+# Pliki trzymane CELOWO poza gitem (patrz .gitignore), ktore mimo to musza
+# trafic na klaster. Repo jest publiczne - to jest powod, dla ktorego runnery
+# nie ida przez gita.
+#
+# Jeden glob na linie. Wysyla je: D:\projekty\05-push-runners.ps1
+#
+# Alternatywa, gdybys chcial wrocic do "code moves only through git":
+# prywatne repo-siostra tylko na runnery, dodane jako submodul albo drugi remote.
+scripts/sbatch_*.sh
