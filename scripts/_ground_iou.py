@@ -42,7 +42,7 @@ from src.manager import build_hyper
 from src.injection import DEFAULT_TARGETS
 from src.sampling import ddim_sample
 from src.tokens import token_span_mask
-from src.regional import set_grounded
+from src.regional import set_grounded, set_regional_self
 from src.cifc_metrics import _Dino
 
 ap = argparse.ArgumentParser()
@@ -60,6 +60,10 @@ ap.add_argument("--dino_floor", type=float, default=0.35,
 ap.add_argument("--seg_dir", default="data/seg", help="wycinki referencyjne do koloru")
 ap.add_argument("--prefix", action="store_true",
                 help="promptuj z eval_prefix ('yellow rubber duck toy') zamiast golo")
+ap.add_argument("--self_leak", type=float, default=-1.0,
+                help="ograniczenie SELF-attention (attn1) do ramki: 0 = pelna izolacja, "
+                     "1 = brak kary (KONTROLA, bo sam procesor zmienia implementacje uwagi "
+                     "z SDPA na jawna), -1 = nie instaluj wcale")
 ap.add_argument("--bg_ref", action="store_true",
                 help="dla kazdej generacji policz TE SAMA bez ramki (to samo ziarno) i podaj "
                      "podobienstwo DINO TLA (obiekt zamaskowany): 1.0 = ramka nie ruszyla tla. "
@@ -113,6 +117,7 @@ CATS = _w.meta["categories"]
 print(f"[env] torch {torch.__version__} | {torch.cuda.get_device_name(0)} | "
       f"host {os.uname().nodename} {os.uname().machine}", flush=True)
 print(f"[cfg] ckpt {a.ckpt} | boxes {a.boxes} | n {a.n} | gain_res {GAIN_RES} | "
+      f"self_leak {a.self_leak} | "
       f"prefix {a.prefix} | confine_tail {a.confine_tail} | seed0 {a.seed0} | "
       f"Mask R-CNN R50-FPN-v2, prog {a.det_thr}, dino_floor {a.dino_floor}",
       flush=True)
@@ -267,6 +272,13 @@ for kap, sched, conf in GRID:
         paths, gcol_sum, gcol_n = {}, np.zeros(3), 0
         for bname, box in BOXES.items():
             manager.cond_box = box
+            if a.self_leak >= 0:
+                # UWAGA na dwie konwencje ramki w tym samym pliku: GSA (geo_inside) uzywa
+                # (cx,cy,w,h), a _region_vec dla procesorow regionalnych uzywa (x0,y0,x1,y1).
+                cx, cy, bw, bh = box
+                set_regional_self(bundle.unet, [(cx - bw / 2, cy - bh / 2,
+                                                 cx + bw / 2, cy + bh / 2)],
+                                  leak=a.self_leak, manager=manager)
             for i in range(a.n):
                 g = torch.Generator(device="cuda").manual_seed(a.seed0 + i)
                 img = ddim_sample(bundle, manager, ch, uh, pooled, num_inference_steps=a.steps,

@@ -193,10 +193,15 @@ class RegionalSelfAttnProcessor:
     perspective) survives; 0 = full isolation, which is what U+1-pass methods get for free.
     """
 
-    def __init__(self, boxes, leak: float = 0.0, strength: Optional[float] = None):
+    def __init__(self, boxes, leak: float = 0.0, strength: Optional[float] = None,
+                 manager=None):
+        """`manager` (opcjonalny): gdy podany, ograniczenie zyje tylko dopoki
+        `manager.ground_gain > 0`, czyli dzieli harmonogram z kappa. Bez tego twarda izolacja
+        w poznych krokach zjada teksture i spojnosc oswietlenia."""
         self.boxes = [b for b in boxes if b is not None]
         self.leak = float(leak)
         self.strength = strength
+        self.manager = manager
         self._cache = {}
 
     def _bias(self, n: int, device, dtype) -> Optional[torch.Tensor]:
@@ -205,9 +210,12 @@ class RegionalSelfAttnProcessor:
             return self._cache[key]
         side = int(round(n ** 0.5))
         bias = None
-        if side * side == n and len(self.boxes) >= 2:
+        # >= 1, nie >= 2: dla JEDNEJ ramki ta sama logika daje dokladnie to, czego trzeba --
+        # `same` to wnetrze-wnetrze, `free` to tlo-tlo, a wnetrze<->tlo jest karane. Wartownik
+        # ">= 2" byl pisany pod kompozycje i blokowal przypadek jednoobiektowy bez powodu.
+        if side * side == n and len(self.boxes) >= 1:
             occ = [v for v in (_region_vec(b, n, device) for b in self.boxes) if v is not None]
-            if len(occ) < 2:
+            if len(occ) < 1:
                 self._cache[key] = None
                 return None
             same = torch.zeros(n, n, device=device)
@@ -241,7 +249,9 @@ class RegionalSelfAttnProcessor:
         scores = torch.baddbmm(
             torch.zeros(q.shape[0], q.shape[1], k.shape[1], device=q.device, dtype=q.dtype),
             q, k.transpose(-1, -2), beta=0, alpha=attn.scale)
-        bias = self._bias(n, q.device, q.dtype) if encoder_hidden_states is None else None
+        active = (self.manager is None
+                  or float(getattr(self.manager, "ground_gain", 1.0)) > 0)
+        bias = self._bias(n, q.device, q.dtype)             if (encoder_hidden_states is None and active) else None
         if bias is not None:
             scores = scores + bias[None]
         probs = scores.softmax(dim=-1).to(v.dtype)
@@ -267,14 +277,14 @@ def set_regional(unet, regions, strength=None, collect: bool = False,
     return n
 
 
-def set_regional_self(unet, boxes, leak: float = 0.0, strength=None) -> int:
+def set_regional_self(unet, boxes, leak: float = 0.0, strength=None, manager=None) -> int:
     """Install regional SELF-attention on attn1; `boxes=None` restores defaults."""
     from diffusers.models.attention_processor import AttnProcessor
     n = 0
     for name, mod in unet.named_modules():
         if name.endswith("attn1") and hasattr(mod, "set_processor"):
             mod.set_processor(AttnProcessor() if not boxes
-                              else RegionalSelfAttnProcessor(boxes, leak, strength))
+                              else RegionalSelfAttnProcessor(boxes, leak, strength, manager))
             n += 1
     return n
 
