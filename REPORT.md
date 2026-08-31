@@ -326,6 +326,48 @@ Zawarcie 0.90–0.94, ćwiartki 99–100%, TA 0.818–0.828, DINO na wycinku 0.6
 nie wypełnia) — dlatego IoU>0.5 zostaje na 73–76% mimo zawarcia 0.9+; K=10 daje wypełnienie
 0.87 i jest lepszym kompromisem niż K=20.
 
+### SUFIT BENCHMARKU: per-koncept DINO jest ograniczone spójnością referencji (2026-08-31)
+
+`scripts/_ref_selfsim.py` (job 21684620). `self_par` = średnie podobieństwo DINO **par zdjęć
+referencyjnych**, `min_par` = najgorsza para. Kolumna DINO to `P_ground_gsa_nocap_all`,
+protokół bez ramki:
+
+| koncept | n | self_par | min_par | DINO | DINO/self_par |
+|---|---|---|---|---|---|
+| dog2 | 5 | 0.913 | 0.873 | 0.863 | 0.95 |
+| cat | 5 | 0.898 | 0.840 | 0.864 | 0.96 |
+| dog | 5 | 0.849 | 0.759 | 0.851 | 1.00 |
+| cat2 | 5 | 0.782 | 0.677 | 0.799 | 1.02 |
+| teddybear | 7 | 0.774 | 0.673 | 0.774 | 1.00 |
+| duck_toy | 4 | 0.721 | 0.637 | 0.785 | 1.09 |
+| **backpack** | 6 | **0.604** | **0.428** | 0.617 | 1.02 |
+| drawing | 6 | 0.555 | 0.362 | — | — |
+| ink_painting | 5 | 0.432 | 0.317 | — | — |
+| painting | 7 | 0.423 | 0.239 | — | — |
+
+**Kolejność per-koncept DINO JEST kolejnością spójności danych**, a stosunek DINO/self_par
+wynosi 0.95–1.09 dla każdego obiektu: nasze generacje są tak podobne do średniej referencji,
+jak same referencje są podobne do siebie. **Na tym benchmarku nie ma już zapasu na tożsamość
+mierzoną DINO.**
+
+Dotyczy to wprost pytania „czemu plecak wypada gorzej" (0.62 przy 0.72–0.89 reszty): jego
+zestaw jest najmniej spójny w benchmarku — dwie referencje są od siebie oddalone o **0.428**,
+bo zdjęcie 00 to plecak **na plecach kobiety** (włosy, ramię, jeansy, chmury w kadrze), a 03
+to ten sam plecak **sam na mchu w lesie**. DINO osadza cały obraz, więc średnia referencji
+jest rozmyciem między „człowiek + niebo" i „plecak + las". Nasze 0.617 leży **powyżej**
+wewnętrznej spójności zestawu. Dodatkowo tożsamość tego konceptu siedzi w drobiazgach
+(metka Herschel, trzy przypinki), których rank-4 LoRA przy 512² nie odtworzy, a dwa z sześciu
+captionów opisują człowieka (`woman with a red backpack`).
+
+Sprostowanie: wcześniejsza uwaga, że nocap dał plecak „przesaturowany różowo", była błędna —
+referencja jest karmazynowo-magentowa (ref RGB 0.40,0.16,0.24), więc magenta była BLIŻEJ
+prawdy niż czarny plecak z bazy.
+
+**Do artykułu:** per-koncept DINO raportować **razem z sufitem** self_par, inaczej 0.62
+czyta się jako porażkę metody, a jest granicą zestawu. To jest też argument, że dalsze
+polerowanie tożsamości na CIFC jest bezcelowe i różnicowanie musi iść przez forgetting,
+skalowanie pamięci i sterowalność.
+
 ## 5. Pozostałe wyniki analityczne (do artykułu)
 
 - **Lekcje maskowania nie przenoszą się między backbone'ami**: nomask +0.019 DINO na SD-1.5,
