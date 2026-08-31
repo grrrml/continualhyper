@@ -76,19 +76,16 @@ if torch.cuda.is_available():
     x = torch.randn(2048, 2048, device="cuda")
     print("matmul    :", float((x @ x).sum()) != 0.0)
 import torchvision; print("torchvision:", torchvision.__version__)
-import diffusers, transformers, accelerate
+import diffusers, transformers
 print("diffusers :", diffusers.__version__)
 print("transformers:", transformers.__version__)
-print("accelerate:", accelerate.__version__)
+import timm; print("timm      :", timm.__version__)
+for opt in ("accelerate", "xformers", "bitsandbytes"):
+    try:
+        m = __import__(opt); print(f"{opt:10}:", getattr(m, "__version__", "?"))
+    except Exception:
+        print(f"{opt:10}: nieobecny (nie ma go w requirements.txt)")
 import numpy; print("numpy     :", numpy.__version__)
-try:
-    import xformers; print("xformers  :", xformers.__version__)
-except Exception as e:
-    print("xformers  : BRAK/BLAD:", e)
-try:
-    import bitsandbytes; print("bitsandbytes:", bitsandbytes.__version__)
-except Exception as e:
-    print("bitsandbytes: BRAK/BLAD:", e)
 PY
 
 echo
