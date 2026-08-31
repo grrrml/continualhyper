@@ -251,6 +251,81 @@ jeszcze starej logiki i wpisała mylące `(DIRTY)` do `run-info.txt` joba 216203
 w proweniencji pozostaje prawdziwy (brany po pullu), ale podmiana w locie może zrobić więcej
 szkody niż mylna flaga.
 
+### Zawieranie i tło — łańcuch mechanizmów (2026-08-31, wieczór)
+
+Wymaganie użytkownika przestało być kompromisem: **obiekt prawie zawsze w ramce** ORAZ
+**sensowne tło**, z celem kompozycji wielokonceptowej. Kolejność odkryć:
+
+**(a) Rodzina kar w uwadze ma pułap.** `tail-confine` 0/3/6/10 → IoU>0.5 62/64/64/65%,
+wypełnienie bez zmian. Kara na samym spanie konceptu to no-op (CLIP przyczynowy).
+
+**(b) Izolacja self-attention NISZCZY placement**: 75% → **4%** IoU>0.5, zawarcie 0.77 → 0.40.
+Wniosek mechanistyczny: **zewnętrze ramki nie dziedziczy obiektu biernie — generuje go samo**
+z promptu i globalnej delty LoRA. Odcięcie komunikacji pozwoliło obu regionom rysować
+niezależnie. To zamyka rodzinę „ograniczaj kanał" i przekierowuje na „zajmij miejsce".
+(Pułapka: `leak` w `RegionalSelfAttnProcessor` jest bezczynne przy `strength=None` — kara
+`(1-allow)*(1-leak)*1e4` po softmaxie jest −inf dla każdego leak<1; leak=0.5 dał liczby
+identyczne z leak=0.0.)
+
+**(c) Bootstrap latentu działa, ale liczy się CO stoi poza ramką.** Zawarcie rośnie
+monotonicznie z długością K. Trzy warianty zewnętrza, κ=2/s=0.3, prompt ze sceną, 84 gen.:
+
+| poza ramką | zawarcie | wypełn. | TA | DINOwyc | tło std |
+|---|---|---|---|---|---|
+| nic (bez bootstrapu) | 0.61 | 1.48 | 0.8073 | 0.7244 | 0.1775 |
+| guidance wyłączone (bezwarunkowo) | 0.55 | 1.60 | — | 0.6891 | 0.1617 |
+| bank teł `data/backgrounds` K=10 | 0.88 | 0.91 | 0.7485 | 0.6973 | 0.1881 |
+| bank teł K=20 | 0.98 | 0.75 | 0.7080 | 0.6962 | 0.1848 |
+| **rusztowanie z promptu K=20** | **0.90** | 0.80 | **0.8278** | 0.6775 | 0.1246 |
+| **rusztowanie z promptu K=15, s25** | **0.93** | 0.77 | **0.8175** | 0.6849 | 0.1302 |
+
+- **Wyłączenie guidance poza ramką jest GORSZE od braku bootstrapu** (0.55 vs 0.77 zawarcia):
+  odebranie promptu to nie to samo, co zajęcie miejsca. Ta sama lekcja co w (b).
+- **Bank teł psuł TA o 0.06** — nie przez zawieranie, a przez niezgodność scen: prompt mówił
+  „on a beach", rusztowanie dawało łąkę. Mój wcześniejszy rozkład („kara 0.061, bootstrap
+  0.006") był błędny metodologicznie — sekwencyjny zamiast czynnikowego; bootstrap SAM
+  kosztuje 0.059, mechanizmy się nakładają.
+- **Rusztowanie generowane z promptu użytkownika** (ten sam prompt z wyciętym konceptem,
+  10 kroków, bez LoRA i groundingu, `lora_scale=0`, `ground_gain_base=0`) daje TA **0.828**,
+  czyli LEPIEJ niż bez bootstrapu (0.807), przy zawarciu 0.90–0.94. Zero danych na wejściu
+  (warunek użytkownika). Liczba kroków rusztowania nie ma znaczenia (10/25/30 → tło std
+  0.125/0.125/0.126).
+
+**(d) Metryki tła: dwa proxy z rzędu wprowadziły w błąd.** `tło grad` bez ramki wynosi 0.070,
+czyli MNIEJ niż każda konfiguracja z ramką — ostra krawędź pustej ściany bije rozmyte bokeh.
+`tło std` stawia rusztowanie z promptu (0.125) niżej niż brak bootstrapu (0.178), a na
+obrazach jest odwrotnie: plaża z falami, fakturą piasku i cieniem pod obiektem vs płaski
+szary kąt. Wiarygodne przesłanki: **siatka wizualna, `tło sim` i TA**. TA jest tu najlepsza,
+bo mierzy wprost „czy tło realizuje prompt".
+
+**(e) Pełnokadrowe DINO nagradza wypełnianie kadru.** Bootstrap K=10: DINO pełne spada 0.101,
+na wycinku 0.027, na masce 0.020 — **75–80% pozornego kosztu tożsamości to artefakt skali**.
+To dotyczy też metryk CIDM (IA i TA są pełnokadrowe), więc porównując kompozycję ich osiami
+karalibyśmy się za spełnienie warunku o ramce. Raportować obie wersje.
+
+**(f) Bez ramek metoda jest NIETKNIĘTA — zmierzone.** Pełny kadr, wszystkie gałki włączone
+(kara 3, bootstrap 20, rusztowanie 25) vs czysty przebieg: DINO 0.7916 vs 0.7898, kolor
+0.097 vs 0.103, tło std 0.1826 vs 0.1836, wypełnienie 0.59 vs 0.60, IoU>0.5 71% vs 71% —
+wszystko w szumie. `tail-confine` i `bootstrap` są zerowe z konstrukcji (kara `(1-inside)`,
+blok pod `cond_box is not None`); miękka maska `geo_inside` (stromość 40) daje przy pełnym
+kadrze `inside`≈0.33 w narożniku, ale efekt pierścienia brzegowego jest poniżej progu.
+
+**(g) CIDM: brak jakiejkolwiek liczby dla kompozycji** (arXiv 2410.17594, wersja HTML +
+ich `evaluate.py`). Metryki w pracy: **tylko IA i TA** (DINO jest w ich kodzie, nie w
+tabelach). Kompozycja to figury 3, 12 i ablacja 6 — wyłącznie jakościowo, bez tabeli ani
+badania użytkowników. **Ich protokół to ITP + RTP**: globalny prompt sceny plus prompt per
+region z ramką od użytkownika. Czyli „konteksty per region" (`RegionKVAttnProcessor` w repo)
+nie są naszym wynalazkiem, tylko protokołem porównania — i rozwiązują problem TA z
+konstrukcji, bo sceneria poza ramką ma własny prompt. To jest właściwy tor dalej, a kara i
+rusztowanie są obejściami problemu, którego w tym protokole nie ma.
+
+**PUNKT PRACY (zawieranie + tło):** `P_ground_gsa_nocap` + κ=2, sched 0.3, **bez kary**,
+bootstrap 10–15 kroków z rusztowaniem z promptu (10 kroków rusztowania wystarcza).
+Zawarcie 0.90–0.94, ćwiartki 99–100%, TA 0.818–0.828, DINO na wycinku 0.68–0.70, kolor
+0.125–0.135, bez ramek bezczynne. Wypełnienie 0.73–0.87 (obiekt respektuje ramkę, ale jej
+nie wypełnia) — dlatego IoU>0.5 zostaje na 73–76% mimo zawarcia 0.9+; K=10 daje wypełnienie
+0.87 i jest lepszym kompromisem niż K=20.
+
 ## 5. Pozostałe wyniki analityczne (do artykułu)
 
 - **Lekcje maskowania nie przenoszą się między backbone'ami**: nomask +0.019 DINO na SD-1.5,
