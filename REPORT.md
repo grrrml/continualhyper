@@ -116,6 +116,60 @@ kompozytów; retrening na bogatych tłach niepilny. Pozostałe skazy: kaczka blo
 (fix: κ per koncept, małe obiekty → κ=2), dog2/cat2 miejscami płaskie.
 OBA kryteria GO spełnione. Dalej: drugi seed (formalizacja), potem kompozycja wielokonceptowa.
 
+### Polerowanie GSA na Heliosie (2026-08-31) — dwa przecieki i uczciwa metryka
+
+**(a) Przeciek atrybutu w captionach treningowych — POTWIERDZONY, fix w treningu.**
+Captiony CIFC to dosłownie `yellow rubber duck toy sitting on a gravel surface` (wszystkie 4)
+i `red backpack sitting on a rock in the woods` (wszystkie 6); `cat` ma `fluffy` w 1 z 5.
+`P_ground_gsa.yaml` **nie ustawia `attr_strip`**, więc `src/data.py` nic nie zjadał i kolor
+wchodził do modelu przez prompt. Gorzej: przy `token_mask_lora: true` delta LoRA aplikuje się
+tylko na pozycjach tokenów `class_word`, więc tokeny `yellow`/`rubber` idą przez **zamrożone**
+K/V — hipersieć koloru nie musiała się nauczyć **i nie mogła go dotknąć**. Po stronie
+ewaluacji `gen_cifc.py` dokłada `eval_prefix`, więc artefakt był niewidoczny do momentu,
+gdy sonda promptuje goło. Korelacja pełna: dwa koncepty z kolorem w captionie to dokładnie
+dwa koncepty z artefaktem (kaczka zielenieje, plecak ma najgorsze DINO: 0.43–0.52).
+Trening bez atrybutów: **job 21592961** (`P_ground_gsa_nocap`, seed 2024 — sparowany
+z `P_ground_gsa`), log dowodzi stripu (`captiony cifc_duck_toy:  duck toy on a blue carpet`).
+Od commita `e442b47` każdy trening drukuje captiony per task — cichy błąd w podmianie nie ma
+żadnego innego objawu niż atrybut, którego adapter się nie uczy.
+
+**(b) Metryka ćwiartek mierzy saliency, nie zawieranie — placement jest słabszy, niż mówiła.**
+`scripts/_ground_iou.py` (Mask R-CNN R50-FPN-v2 COCO, wybór detekcji przez podobieństwo DINO
+do referencji, nie przez score — dla kaczki COCO strzela `dining table`/`vase`, czyli mebel pod
+obiektem). Obecny checkpoint, ćwiartki, 84 generacje, **job 21594432**:
+
+| @κ=2, s=0.3 | ćwiartki | IoU | IoU>0.5 | zawarcie | wypełnienie | DINO |
+|---|---|---|---|---|---|---|
+| dog | 42% | 0.273 | 0% | 0.31 | 2.38 | 0.8414 |
+| duck_toy | 83% | 0.482 | 33% | 0.58 | 1.89 | 0.6890 |
+| cat | 83% | 0.427 | 33% | 0.48 | 2.13 | 0.8338 |
+| backpack | 75% | 0.349 | 25% | 0.46 | 1.63 | 0.4622 |
+| teddybear | 42% | 0.289 | 8% | 0.31 | 2.52 | 0.7206 |
+| dog2 | 58% | 0.403 | 25% | 0.43 | 2.28 | 0.7995 |
+| cat2 | 58% | 0.400 | 17% | 0.41 | 2.45 | 0.7422 |
+| **RAZEM** | **63%** | **0.375** | **20%** | **0.43** | **2.18** | 0.7270 |
+
+Obiekt jest średnio **2.2× większy od żądanej ramki**, a mniej niż połowa jego pikseli wpada
+do środka. Pre-rejestrowane „84.5% GO" to saliency-argmax; kryterium detektorowe z literatury
+groundingu daje **20% IoU>0.5**. To nie unieważnia GO (|L−R| = 0.179 i sonda połówkowa stoją),
+ale **zawęża twierdzenie**: mechanizm steruje *położeniem najwyrazistszej części* obiektu, nie
+jego *rozciągłością*. Do artykułu obie liczby, z tym rozróżnieniem nazwanym wprost.
+
+**Diagnoza konstrukcyjna:** wstrzyk GSA tylko **dodaje** treść w ramce i nic nie **tłumi**
+konceptu poza nią. Brakująca połowa dołożona jako `ground_confine` (commit `5cecfe7`): kara
+logitu dla tokenów konceptu na pozycjach poza ramką, ten sam analityczny adres `inside()`,
+harmonogram wspólny z κ (kara żyje, dopóki `ground_gain > 0`). Pełny kadr ⇒ `inside`=1 ⇒
+kara 0, więc protokół bazowy jest nietknięty. Sweep κ=4/s=0.15 × confine ∈ {0,3,6,10}:
+**job 21597878**. Druga gałka, `ground_gain_res` (mnożnik κ per rozdzielczość mapy attn2):
+układ rozstrzyga się na mapach 8/16, kolor i tekstura na 32/64, a wstrzyk był jednakowy na
+wszystkich 16 warstwach — **job 21597884** (`--gain_res 64:0`).
+
+**Uwaga do κ-aware treningu:** amplituda κ podczas treningu jest **redundantna z magnitudą
+gate'a** (uczy się iloczyn `gain·tanh(gate)`), więc trening ze stałym κ to reparametryzacja
+i nie da silniejszego mechanizmu. Sensowna wersja to trening z κ **losowanym** — to nie
+kalibracja punktu pracy, a regularyzacja odporności na skalę: cel to placement z κ=4 bez
+szkód z κ=4. Peak placement się od tego nie poprawi.
+
 ## 5. Pozostałe wyniki analityczne (do artykułu)
 
 - **Lekcje maskowania nie przenoszą się między backbone'ami**: nomask +0.019 DINO na SD-1.5,
@@ -132,8 +186,9 @@ OBA kryteria GO spełnione. Dalej: drugi seed (formalizacja), potem kompozycja w
 
 ## 6. W toku / otwarte
 
-- (nic nie liczy się na klastrze — wszystkie werdykty groundingu domknięte; czekają decyzje:
-  drugi seed GSA, kompozycja wielokonceptowa, κ per koncept).
+- **Helios, 2026-08-31:** trening `P_ground_gsa_nocap` (21592961) + sondy IoU/confine
+  (21597878) i ablacja rozdzielczości (21597884). Czekają decyzje: drugi seed GSA,
+  kompozycja wielokonceptowa, κ per koncept, retrening κ-losowany.
 - L2DM na SDXL: OOM (A100 40GB) — opcje: gradient checkpointing / batch 1+akum. / liga 4-metodowa.
 - Parked: test szybkości adaptacji (warm-start control, ~5 GPU-h); R_tail "obiecujące,
   niepotwierdzone" (+0.011, 2 seedy, brak trzeciego); sweep h @T=35 (warunek tezy O(1));
@@ -179,7 +234,16 @@ powstawać w jobie, nie na login-nodzie, i dlatego Anaconda tam nie działa. `sb
 `#!/bin/bash -l`, bez tego `module load` nie inicjalizuje się. Moduł: `ML-bundle/24.06a`
 (**nie** domyślny `25.04` — ten ma 4 koła i nie ma torchvision).
 
-**Numeryka — do zweryfikowania przed porównywaniem wyników między klastrami.**
+**Numeryka — ZWERYFIKOWANA 2026-08-31.** Ten sam checkpoint `P_ground_gsa/hyper.pt`, te same
+ziarna (31337+i), 30 kroków, `lora_scale` 0.7: ćwiartki per koncept @κ=2/s=0.3 zgadzają się
+z Ateną **co do próbki** (42/83/83/75/42/58/58, job 21594432 vs percept 3043021), a DINO do
+≤0.0015 na koncept. Sonda połówkowa: κ=1 **86.9%** (73/84, job 21590216) vs 84.5% na Atenie,
+κ=2 **91.7%** (77/84, job 21590217) vs 94.0% — rozjazd 2–3 próbki z 84 siedzi prawie cały na
+kaczce, czyli na koncepcie o najniższym i najbardziej chybotliwym DINO wobec referencji.
+Wniosek: torch 2.6.0+cu124/aarch64 na GH200 nadaje się do tych pomiarów, werdykty się nie
+zmieniają. GH200 jest ~3× szybszy od A100 na tym kodzie (84 generacje @30 kroków: 5 min).
+
+**Szczegóły wersji (kontekst powyższej weryfikacji).**
 `requirements.txt` pinuje `torch==2.7.1` / `torchvision==0.22.1`; kół aarch64 dla tych wersji nie ma
 (max `2.7.0rc9` / `0.21.0`). Spójna dostępna para to **torch 2.6.0+cu124.post3 + torchvision
 0.21.0+cu124torch260**, czyli zejście o wersję minor. Reszta stosu trafia w piny co do numeru:
@@ -189,8 +253,18 @@ mniej bezpieczne niż podniesienie, mimo że `requirements.txt` dopuszcza „new
 
 Smoke (job 21530405): `src.*` importuje się, SD-1.5 wczytany, 25 kroków 512² w **1,7 s**.
 
-**Czego na Heliosie nie ma:** danych. `data/CIFC/` i `outputs/` są na Athenie. Smoke przeszedł, bo
-pobierał SD-1.5 z HF — realny trening nie ma tam czego czytać.
+**Dane i checkpointy są na Heliosie od 2026-08-31**: `$SCRATCH/continualhyper/data` (6.9 GB —
+`CIFC/`, `seg/` 7 konceptów, `backgrounds/` 100 teł) i `outputs/` (24 GB, w tym
+`phaseP/P_ground_gsa/hyper.pt`). Klon `$HOME/projekty/continualhyper` ma symlinki na scratch.
+Zadania idą przez `bash scripts/run.sh scripts/sbatch_py.sh <skrypt.py> ...` i
+`... scripts/sbatch_cl.sh <config>` — oba sourcują `slurm/env.sh`, więc konto i partycja
+Heliosa wchodzą z CLI. Wagi torch.hub (detektory) idą do `$SCRATCH/.cache/torch` przez
+`TORCH_HOME` z `env.sh` — `$HOME` ma 100 000 inodów na wszystko.
+
+**Pułapka w proweniencji:** `run.sh` oznacza każdy run jako `(DIRTY)`, bo `git status` widzi
+nieśledzone symlinki `wandb` i `outputs`, które sam tworzy — a wykluczone są tylko
+`results/logs/data`. Flaga DIRTY straciła więc znaczenie sygnalizacyjne; do naprawy jednym
+wykluczeniem więcej.
 
 ## 8. Konwencja aktualizacji
 
