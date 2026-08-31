@@ -174,20 +174,27 @@ z 2026-08-20 (n=3, ziarna 31337):
 | **nocap + tail3** | 75% | 0.77 | **1.35** | 0.7076 | **0.161** | 0.0993 | 0.1307 |
 | nocap + κ=2/s=0.3 + tail3 | 56% | 0.70 | 1.57 | 0.7268 | 0.128 | — | — |
 
-**ROZSTRZYGNIĘCIE PARAMI (n=6, 168 generacji na wiersz, ziarna 41337, κ=4/s=0.15 + tail3):**
+**ROZSTRZYGNIĘCIE PARAMI (κ=4/s=0.15 + tail3, n=6, DWIE partie ziaren, 336 generacji na
+konfigurację).** Kluczowa obserwacja metodologiczna: **efekt partii ziaren jest WSPÓLNY dla
+obu wariantów** (oba spadają z ~76% na ~67% między partiami), więc czytać należy różnice
+sparowane, nie wartości bezwzględne.
 
-| | IoU>0.5 | zawarcie | wypełnienie | DINO | dRGB | tło std |
-|---|---|---|---|---|---|---|
-| base + tail3 | 68% | 0.73 | 1.60 | 0.6960 | 0.197 | 0.1305 |
-| **nocap + tail3** | 66% | 0.73 | **1.35** | **0.7109** | **0.162** | **0.1399** |
+| metryka | base: 31337 / 41337 | nocap: 31337 / 41337 | Δ(base−nocap) |
+|---|---|---|---|
+| IoU>0.5 | 76% / 68% | 75% / 66% | +1, +2 pp → **remis** |
+| zawarcie | 0.78 / 0.73 | 0.76 / 0.73 | ≈0 |
+| wypełnienie | 1.44 / 1.60 | **1.35 / 1.35** | −0.09, −0.25 |
+| DINO | 0.6970 / 0.6960 | **0.7125 / 0.7109** | −0.0155, −0.0149 |
+| kolor dRGB | 0.192 / 0.197 | **0.159 / 0.162** | +0.033, +0.035 |
+| tło std | 0.1249 / 0.1305 | **0.1323 / 0.1399** | −0.0074, −0.0094 |
 
-Placement **równy** (2 pp = szum), a nocap wygrywa na wszystkich pozostałych osiach.
-Wcześniejsze „base+tail ma lepszy placement (79% vs 75%)" było artefaktem pojedynczego
-pomiaru n=3 — po przejściu na parę n=6 przewaga znika. Wypełnienie 1.35 powtórzyło się
-w **trzech** niezależnych pomiarach tej konfiguracji (n=3 ziarna 31337; n=6 ziarna 31337;
-n=6 ziarna 41337), a IoU>0.5 wahało się 66–75% — zawieranie, tożsamość i kolor są
-powtarzalne, sam IoU>0.5 ma grube słupki. Zgadza się to z siatką: w kolumnie base+tail
-są duplikacje podmiotu i płaskie tła, których żadna liczba nie karze.
+Różnice sparowane powtarzają się co do trzeciego miejsca na obu partiach, choć wartości
+bezwzględne wahają się o 8–9 pp. **`nocap + tail3` dominuje wariant bazowy na zawieraniu,
+tożsamości, kolorze i tle, przy remisie na placemencie.** Wcześniejsze „base+tail ma lepszy
+placement (79% vs 75%)" było artefaktem pojedynczego pomiaru n=3. Wypełnienie 1.35 powtórzyło
+się w trzech niezależnych pomiarach nocap. Zgadza się to z siatką: w kolumnie base+tail są
+duplikacje podmiotu (kaczka z dwoma dziobami, podwojony kot) i płaskie tła, których żadna
+liczba nie karze.
 
 **PUNKT PRACY: `P_ground_gsa_nocap` + κ=4, sched 0.15, tail-confine 3.**
 
