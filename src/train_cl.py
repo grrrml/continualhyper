@@ -159,6 +159,13 @@ def main():
     box_aug_p = float(cfg.get("training", {}).get("box_aug_p", 0.5))
     # segmentowana wklejka (objective v2): caly wyciety obiekt (RGBA) na naturalne tlo,
     # strata BEZ maski -> ramka jest informacyjnie konieczna przy wysokim szumie
+    # `alpha_erode`: gradient alfy w wycinkach (isnet + feather ~10 px) wmieszuje kolor tla
+    # ZE ZDJECIA ZRODLOWEGO w brzeg obiektu, wiec kazda wklejka nosi poswiate po sylwetce.
+    # Adapter uczy sie jej jako czesci konceptu i przy wlaczonym groundingu obiekty dostaja
+    # widoczne OBWODKI (zmierzone 2026-08-31: rant obecny przy ramce, nieobecny bez niej).
+    # Min-pooling cofa brzeg do wnetrza obiektu, wiec skrajne piksele maja kolor OBIEKTU.
+    # 0 = zachowanie dotychczasowe (stare configi bez zmian).
+    alpha_erode = int(cfg.get("training", {}).get("alpha_erode", 0))
     seg_dir = cfg.get("training", {}).get("seg_dir")
     bg_dir = cfg.get("training", {}).get("bg_dir")
     seg_bank, bg_bank = {}, []
@@ -316,6 +323,10 @@ def main():
                                               align_corners=False)[0]
                         al = Fnn.interpolate(al[None], size=(nh, nw), mode="bilinear",
                                              align_corners=False)[0].clamp(0, 1)
+                        if alpha_erode > 0:
+                            k = 2 * alpha_erode + 1
+                            al = -Fnn.max_pool2d(-al[None], k, stride=1,
+                                                 padding=alpha_erode)[0]
                         if box is None:      # JEDNA ramka na krok (set_ground jest per krok)
                             x0 = int(torch.randint(0, H - nw + 1, (1,)).item())
                             y0 = int(torch.randint(0, H - nh + 1, (1,)).item())
