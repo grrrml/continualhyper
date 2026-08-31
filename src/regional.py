@@ -406,6 +406,27 @@ class GroundedAttnProcessor:
         s = torch.baddbmm(torch.zeros(q.shape[0], q.shape[1], k.shape[1],
                                       device=q.device, dtype=q.dtype),
                           q, k.transpose(-1, -2), beta=0, alpha=attn.scale)
+        # `ground_confine`: kara w logicie dla pozycji POZA ramka na tokenach konceptu.
+        # Metryka IoU pokazala, ze wstrzyk GSA steruje POLOZENIEM najwyrazistszej czesci,
+        # ale nie ROZCIAGLOSCIA obiektu (wypelnienie 1.9-2.4 ramki): dodaje tresc w ramce,
+        # a nic nie tlumi konceptu poza nia. Adres jest ten sam analityczny inside(), a
+        # harmonogram wspolny z kappa (kara zyje tylko dopoki ground_gain > 0), bo twarde
+        # tlumienie w poznych krokach zjada teksture. Pelny kadr => inside=1 => kara = 0,
+        # czyli protokol bazowy jest nietkniety.
+        conf = float(getattr(self.manager, "ground_confine", 0.0) or 0.0)
+        if (conf > 0 and encoder_hidden_states is not None
+                and getattr(self.manager, "lora_enabled", True)
+                and float(getattr(self.manager, "ground_gain", 1.0)) > 0
+                and getattr(self.manager, "_ground_box", None) is not None):
+            n_img = s.shape[1]
+            ch_, cw_ = (h, w) if ndim == 4 else (int(n_img ** 0.5),) * 2
+            if ch_ * cw_ == n_img:
+                outside = 1.0 - self.manager.geo_inside(ch_, cw_, s.device, s.dtype)  # [n,1]
+                tmask = self.manager.get_token_mask()
+                mine = (tmask.reshape(-1)[:s.shape[2]].to(device=s.device, dtype=s.dtype)
+                        if tmask is not None
+                        else torch.ones(s.shape[2], device=s.device, dtype=s.dtype))
+                s = s - conf * (outside * mine[None, :]).unsqueeze(0)
         out = torch.bmm(s.softmax(dim=-1).to(v.dtype), v)
 
         if getattr(self.manager, "ground_gsa", False) and encoder_hidden_states is not None:
