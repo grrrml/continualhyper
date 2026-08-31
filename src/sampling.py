@@ -32,9 +32,11 @@ def ddim_sample(
                                     # lay out the prompt's composition, late steps paint identity)
     latents: Optional[torch.Tensor] = None,   # pre-drawn latents (per-image generators); when
                                               # given, no sampling happens here
-    bootstrap_steps: int = 0,          # przez pierwsze K krokow ZEWNETRZE ramki jest zaszumionym
-                                       # tlem, wiec podmiot nie ma gdzie powstac poza ramka
-    bootstrap_bg: Optional[torch.Tensor] = None,   # latent tla [1,C,h,w]; None -> plaska szarosc
+    bootstrap_steps: int = 0,          # przez pierwsze K krokow poza ramka NIE DZIALA prompt:
+                                       # zewnetrze odszumiane bezwarunkowo, wnetrze z pelnym CFG
+    bootstrap_bg: Optional[torch.Tensor] = None,   # ABLACJA: podstaw zewnetrzny latent tla
+                                       # zamiast trybu bezwarunkowego (wymaga danych na wejsciu,
+                                       # wiec nie jest to wersja docelowa - patrz komentarz nizej)
 ) -> torch.Tensor:
     """Returns images in [0,1], shape [batch_size, 3, H, W]."""
     device, dtype = bundle.device, bundle.dtype
@@ -71,12 +73,16 @@ def ddim_sample(
     steps_list = list(scheduler.timesteps)
     start_i = int(round(float(lora_start_frac) * len(steps_list)))
     compose = getattr(manager, "compose_tasks", None)   # LoRA-C: average eps over adapters
-    # Bootstrap (MultiDiffusion / CIDM rownanie 5): kary w uwadze maja zmierzony pulap
-    # (tail-confine +17 pp i nasycenie), a izolacja self-attention pogarsza sprawe, bo
-    # zewnetrze nie dziedziczy obiektu biernie - generuje go samo. Tu odbieramy mu material:
-    # przez pierwsze K krokow poza ramka stoi ZASZUMIONE TLO, wiec trajektoria zobowiazuje sie
-    # tam do tla przy najwyzszym szumie, kiedy uklad sie rozstrzyga. Tlo naturalne, nie plaska
-    # szarosc: plaskie tlo jest wlasnie tym artefaktem, ktory probujemy usunac.
+    # Bootstrap: kary w uwadze maja zmierzony pulap (tail-confine +17 pp i nasycenie), a
+    # izolacja self-attention pogarsza sprawe, bo zewnetrze nie dziedziczy obiektu biernie -
+    # generuje go samo z promptu. Wiec odbieramy mu prompt: przez pierwsze K krokow, kiedy
+    # uklad sie rozstrzyga, ZEWNETRZE ramki jest odszumiane BEZWARUNKOWO (bez guidance), a
+    # wnetrze z pelnym CFG. Nic nie pcha konceptu poza ramke, a tlo maluje potem pelny prompt
+    # przez pozostale kroki. Predykcja bezwarunkowa i tak jest liczona na potrzeby CFG, wiec
+    # koszt to ZERO dodatkowych przebiegow UNetu i ZERO danych wejsciowych - inferencja nie
+    # moze zalezec od zewnetrznego banku tel (decyzja uzytkownika 2026-08-31).
+    # `bootstrap_bg` zostaje tylko jako ABLACJA (zmierzone: zewnetrzne naturalne tlo daje
+    # tlo std 0.188 vs 0.131 bez bootstrapu, zawarcie 0.88, wypelnienie 1.02).
     bs_mask = None
     if bootstrap_steps > 0 and getattr(manager, "cond_box", None) is not None:
         cx, cy, bw, bh = manager.cond_box
@@ -84,11 +90,8 @@ def ddim_sample(
         y0, y1 = int((cy - bh / 2) * lh), max(int((cy - bh / 2) * lh) + 1, int(round((cy + bh / 2) * lh)))
         x0, x1 = int((cx - bw / 2) * lw), max(int((cx - bw / 2) * lw) + 1, int(round((cx + bw / 2) * lw)))
         bs_mask[:, :, y0:y1, x0:x1] = 1.0
-        if bootstrap_bg is None:
-            flat = torch.full((1, 3, height, width), 0.5, device=device, dtype=dtype)
-            bootstrap_bg = (bundle.vae.encode(flat * 2 - 1).latent_dist.mean
-                            * bundle.vae.config.scaling_factor)
-        bootstrap_bg = bootstrap_bg.to(device=device, dtype=dtype)
+        if bootstrap_bg is not None:
+            bootstrap_bg = bootstrap_bg.to(device=device, dtype=dtype)
 
     for i, t in enumerate(steps_list):
         hook = getattr(manager, "_step_hook", None)
@@ -111,7 +114,7 @@ def ddim_sample(
         if time_cond:                       # adapter depends on t -> refresh the cache
             manager.cond_t = float(t) / n_train_t
             manager.compute_and_cache_loras()
-        if bs_mask is not None and i < bootstrap_steps:
+        if bs_mask is not None and i < bootstrap_steps and bootstrap_bg is not None:
             noise_bg = torch.randn(bootstrap_bg.shape, generator=generator, device=device,
                                    dtype=dtype)
             bg_t = scheduler.add_noise(bootstrap_bg, noise_bg, t.reshape(1))
@@ -129,7 +132,11 @@ def ddim_sample(
         with manager.no_lora():
             noise_uncond = unet(model_input, t, encoder_hidden_states=uncond_seq, added_cond_kwargs=ac_u or None).sample
 
-        noise_pred = noise_uncond + guidance_scale * (noise_cond - noise_uncond)
+        if bs_mask is not None and i < bootstrap_steps and bootstrap_bg is None:
+            # guidance TYLKO w ramce: poza nia zostaje czysta predykcja bezwarunkowa
+            noise_pred = noise_uncond + guidance_scale * (noise_cond - noise_uncond) * bs_mask
+        else:
+            noise_pred = noise_uncond + guidance_scale * (noise_cond - noise_uncond)
         latents = scheduler.step(noise_pred, t, latents).prev_sample
 
     return bundle.decode_latents(latents)

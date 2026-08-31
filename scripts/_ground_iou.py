@@ -62,8 +62,9 @@ ap.add_argument("--prefix", action="store_true",
                 help="promptuj z eval_prefix ('yellow rubber duck toy') zamiast golo")
 ap.add_argument("--bootstrap", type=int, default=0,
                 help="liczba pierwszych krokow, w ktorych ZEWNETRZE ramki jest zaszumionym tlem")
-ap.add_argument("--bg_dir", default="data/backgrounds",
-                help="naturalne tla do bootstrapu; pusty string = plaska szarosc")
+ap.add_argument("--bg_dir", default="",
+                help="ABLACJA: zewnetrzne tla do bootstrapu. Pusty (domyslnie) = tryb docelowy, "
+                     "czyli zewnetrze odszumiane bezwarunkowo - bez zadnych danych na wejsciu")
 ap.add_argument("--self_leak", type=float, default=-1.0,
                 help="ograniczenie SELF-attention (attn1) do ramki: 0 = pelna izolacja, "
                      "1 = brak kary (KONTROLA, bo sam procesor zmienia implementacje uwagi "
