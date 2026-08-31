@@ -138,6 +138,23 @@ def ref_color(concept_id):
     return (tot / wsum) if wsum > 0 else None
 
 
+def ref_fill(c):
+    """Sredni udzial obiektu w kadrze ZDJEC REFERENCYJNYCH (pole ciasnego wycinka / pole
+    zdjecia). Hipoteza do sprawdzenia wobec kolumny "wypelnienie": adapter uczy sie skali
+    z referencji, wiec koncepty fotografowane jako zblizenie beda przelewac sie z ramki
+    niezaleznie od jakosci adresowania."""
+    vals = []
+    for p in sorted(glob.glob(os.path.join(a.seg_dir, c["concept_id"], "*.png"))):
+        stem = os.path.splitext(os.path.basename(p))[0]
+        orig = glob.glob(os.path.join(c["images_dir"], stem + ".*"))
+        if not orig:
+            continue
+        cw, ch = Image.open(p).size
+        ow, oh = Image.open(orig[0]).size
+        vals.append((cw * ch) / float(ow * oh))
+    return (sum(vals) / len(vals)) if vals else None
+
+
 @torch.no_grad()
 def dino_feat(pil):
     return Fn.normalize(dino.m(dino.tf(pil).unsqueeze(0).to("cuda")), dim=-1)
@@ -252,6 +269,9 @@ for kap, sched, conf in GRID:
               f"IoU {st['iou']/nd:.3f} | IoU>0.5 {st['hit']/nd:.0%} | zawarcie {st['con']/nd:.2f} | "
               f"wypelnienie {st['fill']/nd:.2f} | DINO {st['dino']/n:.4f} | "
               f"det {int(st['ndet'])}/{int(st['n'])} {paths}", flush=True)
+        rf = ref_fill(c)
+        if rf is not None:
+            print(f"  {'':<16} obiekt w kadrze referencji: {rf:.2f}", flush=True)
         if rcol is not None and gcol_n > 0:
             gm, ncol = gcol_sum / gcol_n, max(1.0, st["ncol"])
             print(f"  {'':<16} kolor dRGB {st['dcol']/ncol:.3f} | "
