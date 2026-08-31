@@ -99,6 +99,6 @@ for r, (cid, row) in enumerate(rows):
     d.text((6, r * (cell + pad) + cell // 2 - 6), cid.replace("cifc_", ""), fill=(0, 0, 0))
     for k, im in enumerate(row):
         sheet.paste(im, (lab + k * (cell + pad), r * (cell + pad)))
-os.makedirs("assets/figures", exist_ok=True)
+os.makedirs(os.path.dirname(_a.out) or ".", exist_ok=True)   # katalog z --out, nie zaszyty
 sheet.save(_a.out, quality=92)
 print(f"GRID_DONE -> {_a.out}", flush=True)
