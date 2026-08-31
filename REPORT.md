@@ -116,59 +116,91 @@ kompozytów; retrening na bogatych tłach niepilny. Pozostałe skazy: kaczka blo
 (fix: κ per koncept, małe obiekty → κ=2), dog2/cat2 miejscami płaskie.
 OBA kryteria GO spełnione. Dalej: drugi seed (formalizacja), potem kompozycja wielokonceptowa.
 
-### Polerowanie GSA na Heliosie (2026-08-31) — dwa przecieki i uczciwa metryka
+### Polerowanie GSA na Heliosie (2026-08-31) — dwa przecieki, uczciwa metryka, nowy punkt pracy
 
-**(a) Przeciek atrybutu w captionach treningowych — POTWIERDZONY, fix w treningu.**
-Captiony CIFC to dosłownie `yellow rubber duck toy sitting on a gravel surface` (wszystkie 4)
-i `red backpack sitting on a rock in the woods` (wszystkie 6); `cat` ma `fluffy` w 1 z 5.
-`P_ground_gsa.yaml` **nie ustawia `attr_strip`**, więc `src/data.py` nic nie zjadał i kolor
-wchodził do modelu przez prompt. Gorzej: przy `token_mask_lora: true` delta LoRA aplikuje się
-tylko na pozycjach tokenów `class_word`, więc tokeny `yellow`/`rubber` idą przez **zamrożone**
-K/V — hipersieć koloru nie musiała się nauczyć **i nie mogła go dotknąć**. Po stronie
-ewaluacji `gen_cifc.py` dokłada `eval_prefix`, więc artefakt był niewidoczny do momentu,
-gdy sonda promptuje goło. Korelacja pełna: dwa koncepty z kolorem w captionie to dokładnie
-dwa koncepty z artefaktem (kaczka zielenieje, plecak ma najgorsze DINO: 0.43–0.52).
-Trening bez atrybutów: **job 21592961** (`P_ground_gsa_nocap`, seed 2024 — sparowany
-z `P_ground_gsa`), log dowodzi stripu (`captiony cifc_duck_toy:  duck toy on a blue carpet`).
-Od commita `e442b47` każdy trening drukuje captiony per task — cichy błąd w podmianie nie ma
-żadnego innego objawu niż atrybut, którego adapter się nie uczy.
+**(a) Przeciek atrybutu w captionach treningowych — POTWIERDZONY i NAPRAWIONY.**
+Captiony CIFC to dosłownie `yellow rubber duck toy sitting on a gravel surface` (4/4)
+i `red backpack sitting on a rock in the woods` (6/6); `cat` ma `fluffy` w 1 z 5.
+`P_ground_gsa.yaml` **nie ustawiał `attr_strip`**, więc `src/data.py` nic nie zjadał i kolor
+wchodził promptem. Gorzej: przy `token_mask_lora: true` delta LoRA aplikuje się tylko na
+pozycjach tokenów `class_word`, więc tokeny `yellow`/`rubber` idą przez **zamrożone** K/V —
+hipersieć koloru nie musiała się nauczyć **i nie mogła go dotknąć**. `gen_cifc.py` dokłada przy
+ewaluacji `eval_prefix`, więc artefakt był niewidoczny, dopóki sonda nie promptowała goło.
+Trening bez atrybutów: `P_ground_gsa_nocap`, job 21592961, seed 2024 (sparowany z bazą).
+Wynik @κ=2/s=0.3, te same ziarna, ten sam instrument:
 
-**(b) Metryka ćwiartek mierzy saliency, nie zawieranie — placement jest słabszy, niż mówiła.**
-`scripts/_ground_iou.py` (Mask R-CNN R50-FPN-v2 COCO, wybór detekcji przez podobieństwo DINO
-do referencji, nie przez score — dla kaczki COCO strzela `dining table`/`vase`, czyli mebel pod
-obiektem). Obecny checkpoint, ćwiartki, 84 generacje, **job 21594432**:
+| koncept | DINO base → nocap | dRGB base → nocap | gen RGB base → nocap | ref RGB |
+|---|---|---|---|---|
+| duck_toy | 0.6890 → **0.7377** | 0.272 → **0.181** | (0.55,0.45,0.28) → (0.62,0.50,0.21) | (0.75,0.60,0.20) |
+| backpack | 0.4622 → **0.5582** | 0.228 → **0.139** | (0.29,0.30,0.32) → (0.34,0.17,0.25) | (0.40,0.16,0.24) |
 
-| @κ=2, s=0.3 | ćwiartki | IoU | IoU>0.5 | zawarcie | wypełnienie | DINO |
-|---|---|---|---|---|---|---|
-| dog | 42% | 0.273 | 0% | 0.31 | 2.38 | 0.8414 |
-| duck_toy | 83% | 0.482 | 33% | 0.58 | 1.89 | 0.6890 |
-| cat | 83% | 0.427 | 33% | 0.48 | 2.13 | 0.8338 |
-| backpack | 75% | 0.349 | 25% | 0.46 | 1.63 | 0.4622 |
-| teddybear | 42% | 0.289 | 8% | 0.31 | 2.52 | 0.7206 |
-| dog2 | 58% | 0.403 | 25% | 0.43 | 2.28 | 0.7995 |
-| cat2 | 58% | 0.400 | 17% | 0.41 | 2.45 | 0.7422 |
-| **RAZEM** | **63%** | **0.375** | **20%** | **0.43** | **2.18** | 0.7270 |
+Plecak przeszedł z achromatycznej szarości (R≈G≈B) na czerwień z kanałami G i B trafiającymi
+w referencję. Wzrokowo (`assets/figures/ground_compare_k4.jpg`): kaczka **zielona** w base,
+**żółta** w nocap, na obu ziarnach; plecak czarny → karmazynowy. DINO +0.049 i +0.096 to
+5–10× szum międzyseedowy. Koszt: pięć pozostałych konceptów nie zyskuje, a trzy późne taski
+tracą (teddy −0.028, cat2 −0.035, dog −0.010) — podpis interferencji trajektorii CL, bo zmiana
+captionów tasków 1 i 3 przestawia kotwice von Oswalda i wszystko po nich. Przy jednym seedzie
+nieodróżnialne od szumu trajektorii; drugi seed to rozstrzygnie.
+Od commita `e442b47` każdy trening drukuje captiony per task.
 
-Obiekt jest średnio **2.2× większy od żądanej ramki**, a mniej niż połowa jego pikseli wpada
-do środka. Pre-rejestrowane „84.5% GO" to saliency-argmax; kryterium detektorowe z literatury
-groundingu daje **20% IoU>0.5**. To nie unieważnia GO (|L−R| = 0.179 i sonda połówkowa stoją),
-ale **zawęża twierdzenie**: mechanizm steruje *położeniem najwyrazistszej części* obiektu, nie
-jego *rozciągłością*. Do artykułu obie liczby, z tym rozróżnieniem nazwanym wprost.
+**(b) Metryka ćwiartek zawyżała placement.** `scripts/_ground_iou.py` (Mask R-CNN R50-FPN-v2,
+wybór detekcji przez podobieństwo DINO do referencji, nie przez score — dla kaczki COCO strzela
+`dining table`/`vase`). Ćwiartki mierzą argmax podobieństwa, czyli GDZIE koncept jest
+najwyrazistszy, a nie czy MIESCI SIE w ramce: @κ=2 kaczka ma 83% ćwiartek i 33% IoU>0.5.
+Do artykułu obie liczby z nazwanym rozróżnieniem.
 
-**Diagnoza konstrukcyjna:** wstrzyk GSA tylko **dodaje** treść w ramce i nic nie **tłumi**
-konceptu poza nią. Brakująca połowa dołożona jako `ground_confine` (commit `5cecfe7`): kara
-logitu dla tokenów konceptu na pozycjach poza ramką, ten sam analityczny adres `inside()`,
-harmonogram wspólny z κ (kara żyje, dopóki `ground_gain > 0`). Pełny kadr ⇒ `inside`=1 ⇒
-kara 0, więc protokół bazowy jest nietknięty. Sweep κ=4/s=0.15 × confine ∈ {0,3,6,10}:
-**job 21597878**. Druga gałka, `ground_gain_res` (mnożnik κ per rozdzielczość mapy attn2):
-układ rozstrzyga się na mapach 8/16, kolor i tekstura na 32/64, a wstrzyk był jednakowy na
-wszystkich 16 warstwach — **job 21597884** (`--gain_res 64:0`).
+**(c) Brakująca połowa mechanizmu: tłumienie poza ramką — i dlaczego musi objąć ogon.**
+Wstrzyk GSA tylko DODAJE treść w ramce, nic nie TŁUMI konceptu poza nią. `ground_confine`
+(kara logitu dla tokenów konceptu na pozycjach poza ramką, ten sam analityczny adres
+`inside()`, harmonogram wspólny z κ) na samym spanie konceptu jest **no-op**: kara 0/3/6/10 →
+IoU>0.5 62/64/64/65%, wypełnienie bez zmian. Wyjaśnienie było już zmierzone w tym repo
+(docstring `RegionKVAttnProcessor`, audit 2885915): **CLIP jest przyczynowy**, więc koncept
+wycieka do każdego kolejnego tokenu, a kara na pozycjach `dog` zostawia EOS i padding niosące
+całe zdanie. `ground_confine_tail` (`cummax` po osi tokenów — kara od pierwszego tokenu
+konceptu do końca sekwencji) przy karze 3: **IoU>0.5 62% → 79%**, zawarcie 0.67 → 0.78,
+wypełnienie 1.60 → 1.43, koszt DINO 0.0087. Nasyca się natychmiast (3/6/10 → 79/77/78%), więc
+punkt pracy to kara 3. **Maska kary to nie maska LoRA**: `token_mask_lora` zostaje na spanie,
+bo celowo nie rusza reszty promptu (prompt-following). Dwie różne maski, dotąd przypadkiem
+identyczne.
 
-**Uwaga do κ-aware treningu:** amplituda κ podczas treningu jest **redundantna z magnitudą
-gate'a** (uczy się iloczyn `gain·tanh(gate)`), więc trening ze stałym κ to reparametryzacja
-i nie da silniejszego mechanizmu. Sensowna wersja to trening z κ **losowanym** — to nie
-kalibracja punktu pracy, a regularyzacja odporności na skalę: cel to placement z κ=4 bez
-szkód z κ=4. Peak placement się od tego nie poprawi.
+**(d) Punkt pracy: `nocap + κ=4/s=0.15 + tail-confine 3`.** Wszystkie osie wobec stanu
+z 2026-08-20 (n=3, ziarna 31337):
+
+| konfiguracja | IoU>0.5 | zawarcie | wypełn. | DINO | dRGB | tło grad | tło std |
+|---|---|---|---|---|---|---|---|
+| base, bez kary (stan przed) | 62% | 0.67 | 1.60 | 0.7001 | 0.180 | 0.1104 | 0.1385 |
+| base + tail3 | **79%** | 0.78 | 1.43 | 0.6914 | 0.183 | 0.0969 | 0.1250 |
+| nocap, bez kary | 38% | 0.57 | 1.76 | **0.7167** | 0.146 | 0.1099 | **0.1502** |
+| **nocap + tail3** | 75% | 0.77 | **1.35** | 0.7076 | **0.161** | 0.0993 | 0.1307 |
+| nocap + κ=2/s=0.3 + tail3 | 56% | 0.70 | 1.57 | 0.7268 | 0.128 | — | — |
+
+**(e) Ostrzeżenia metodologiczne, które dotyczą wstecz.**
+1. **Szum IoU>0.5 to do ~10 pp**, nie 1 pp: ten sam checkpoint na świeżych ziarnach dał base
+   62% → 52%, nocap 37% → 38%. Przy 168 próbkach błąd dwumianowy to ~3.9 pp, a próbki w obrębie
+   konceptu są skorelowane. Pojedyncze pomiary n=3 są orientacyjne; różnica base/nocap na
+   placemencie po przejściu na n=6 spadła z 25 pp do **14 pp** (52% vs 38%), a różnica
+   wypełnienia (1.60 vs 1.78) **zniknęła** (1.75 vs 1.76) — była szumem.
+2. **Metryka tła i oko się nie zgadzają.** Wzrokowo `nocap+tail` ma najbogatsze tła, a
+   `tło grad` stawia je niżej niż base bez kary. Energia gradientu mierzy lokalny kontrast, nie
+   zawartość sceny: ostra krawędź pustej ściany punktuje wyżej niż rozmyty park. Rozstrzyga
+   `--bg_ref` (podobieństwo DINO tła do generacji bez ramki na tym samym ziarnie).
+3. **Duplikacja podmiotu jest niewidoczna dla IoU.** W `base+tail` na drugim ziarnie kaczka ma
+   dwa dzioby, a kot jest podwojony; dobra ramka detekcji tego nie karze. To dodatkowy powód,
+   dla którego `base+tail` (79%) jest gorszy od `nocap+tail` (75%) wbrew liczbie.
+
+**(f) Odrzucone dzisiaj, z pomiarem.**
+- **`gain_res` (κ per rozdzielczość):** wyłączenie wstrzyku na mapach 64² zabiera 16 pp IoU>0.5
+  (62% → 46%), a kolor poprawia o 0.007 (w szumie). Najdrobniejsze warstwy attn2 współpracują
+  w układzie, a dryf koloru nie pochodzi ze wstrzyku.
+- **Prior skali z referencji:** kolumna „obiekt w kadrze referencji" nie koreluje z wypełnieniem
+  (kot: referencja 0.76 → wypełnienie 1.25; kaczka: 0.23 → 2.19). Wcześniejszy wniosek z porządku
+  wypełnień był konfudowany podziałem zwierzę/przedmiot. Zdejmuje to `box_aug_p` z priorytetów.
+- **„Nocap ma słabszy grounding":** normy z checkpointów mówią odwrotnie — `ground_gates`
+  ×1.086, `Σ tanh(gate)·||o||` ×1.099, `ground_gsa_mods` ×0.999, LoRA ×1.000. Grounding jest
+  ~10% silniejszy, a wagi LoRA mają identyczną normę (zmieniły się kierunki, nie amplituda).
+- **κ-aware trening jako kalibracja punktu pracy:** uczy się iloczyn `gain·tanh(gate)`, więc
+  stałe κ w treningu to reparametryzacja. Sens ma tylko κ **losowane**, jako regularyzacja
+  odporności na skalę — i nie podniesie szczytowego placementu.
 
 ## 5. Pozostałe wyniki analityczne (do artykułu)
 
