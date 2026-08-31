@@ -60,6 +60,8 @@ ap.add_argument("--dino_floor", type=float, default=0.35,
 ap.add_argument("--seg_dir", default="data/seg", help="wycinki referencyjne do koloru")
 ap.add_argument("--prefix", action="store_true",
                 help="promptuj z eval_prefix ('yellow rubber duck toy') zamiast golo")
+ap.add_argument("--confine_tail", action="store_true",
+                help="kara confine do konca sekwencji (CLIP przyczynowy), nie tylko na spanie")
 ap.add_argument("--out", default="", help="katalog na podglady z ramkami (pusty = nie zapisuj)")
 a = ap.parse_args()
 
@@ -90,6 +92,7 @@ load_hyper(manager, a.ckpt, map_location="cuda")
 manager.eval()
 manager.lora_scale = a.scale
 manager.ground_gain_res = GAIN_RES
+manager.ground_confine_tail = a.confine_tail
 set_grounded(bundle.unet, manager)
 dino = _Dino("cuda")
 
@@ -102,7 +105,8 @@ CATS = _w.meta["categories"]
 print(f"[env] torch {torch.__version__} | {torch.cuda.get_device_name(0)} | "
       f"host {os.uname().nodename} {os.uname().machine}", flush=True)
 print(f"[cfg] ckpt {a.ckpt} | boxes {a.boxes} | n {a.n} | gain_res {GAIN_RES} | "
-      f"prefix {a.prefix} | Mask R-CNN R50-FPN-v2, prog {a.det_thr}, dino_floor {a.dino_floor}",
+      f"prefix {a.prefix} | confine_tail {a.confine_tail} | "
+      f"Mask R-CNN R50-FPN-v2, prog {a.det_thr}, dino_floor {a.dino_floor}",
       flush=True)
 if a.out:
     os.makedirs(a.out, exist_ok=True)

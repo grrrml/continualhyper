@@ -143,6 +143,7 @@ class ContinualHyperManager(nn.Module):
         self.ground_gsa_mods = None
         self.ground_gain_res = None      # {strona mapy attn2 -> mnoznik kappa}, None = 1.0 wszedzie
         self.ground_confine = 0.0        # kara logitu dla tokenow konceptu poza ramka (0 = wylaczona)
+        self.ground_confine_tail = False  # kara do konca sekwencji (CLIP przyczynowy), nie tylko span
         self.ground_film = None
         self._ground_film_gb = None
         if self.ground_gsa:

@@ -426,6 +426,12 @@ class GroundedAttnProcessor:
                 mine = (tmask.reshape(-1)[:s.shape[2]].to(device=s.device, dtype=s.dtype)
                         if tmask is not None
                         else torch.ones(s.shape[2], device=s.device, dtype=s.dtype))
+                if getattr(self.manager, "ground_confine_tail", False):
+                    # CLIP jest PRZYCZYNOWY: koncept wycieka do kazdego kolejnego tokenu,
+                    # wiec kara tylko na jego wlasnych pozycjach zostawia EOS i padding,
+                    # ktore niosa cale zdanie (zmierzone w tym repo: audit 2885915).
+                    # cummax => kara od pierwszego tokenu konceptu do konca sekwencji.
+                    mine = torch.cummax(mine, dim=0).values
                 s = s - conf * (outside * mine[None, :]).unsqueeze(0)
         out = torch.bmm(s.softmax(dim=-1).to(v.dtype), v)
 
