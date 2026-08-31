@@ -39,9 +39,13 @@ from .sd_loader import load_sd
 
 
 @torch.no_grad()
-def _gen_one(bundle, manager, prompt, steps, gscale, seed, task_idx=None, mask_phrase=None):
-    """Sample one image for `prompt`; returns [3,H,W] in [0,1] on cpu."""
+def _gen_one(bundle, manager, prompt, steps, gscale, seed, task_idx=None, mask_phrase=None,
+             box=None):
+    """Sample one image for `prompt`; returns [3,H,W] in [0,1] on cpu.
+    `box` jest ustawiany JAWNIE (None = pelny kadr) - wczesniej probki diag dziedziczyly
+    resztkowa losowa ramke z ostatniego kroku treningu."""
     manager.eval()
+    manager.cond_box = box
     cond_hidden, pooled, _ = bundle.encode_text([prompt])
     uncond_hidden, _, _ = bundle.encode_text([""])
     token_mask = None
@@ -49,8 +53,10 @@ def _gen_one(bundle, manager, prompt, steps, gscale, seed, task_idx=None, mask_p
         from .tokens import token_span_mask
         token_mask = token_span_mask(bundle.tokenizer, [prompt], mask_phrase)
     gen = torch.Generator(device=bundle.device).manual_seed(seed)
+    res = int(getattr(bundle, "default_resolution", 512))   # SDXL at 512 tiles into garbage
     img = ddim_sample(bundle, manager, cond_hidden, uncond_hidden, pooled,
                       num_inference_steps=steps, guidance_scale=gscale, batch_size=1,
+                      height=res, width=res,
                       generator=gen, scheduler=bundle.dpm_scheduler,
                       task_idx=task_idx, token_mask=token_mask)[0].clamp(0, 1).cpu()
     manager.train()
@@ -100,12 +106,20 @@ def main():
     use_wandb = bool(wandb_cfg.get("enabled", False))
     reg_cfg = cfg.get("reg", {})
     reg_weight = float(args.reg_weight if args.reg_weight is not None else reg_cfg.get("weight", 0.0))
+    scale_min = float((cfg.get("task_cond") or {}).get("scale_min", 0.3))
+    scale_kappa = float((cfg.get("task_cond") or {}).get("scale_kappa", 1e-3))
     lookahead_lr = float(reg_cfg.get("lookahead_lr", lr))   # von-Oswald candidate-step size (default = lr)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # fp32 backbone for the baseline (no grad-scaler headaches; hyper grads stay clean).
-    bundle = (load_sd(model_id=cfg["sd_model_id"], device=device, dtype=cfg.get("weight_dtype", "fp32"))
-              if cfg.get("sd_model_id") else load_sd(device=device, dtype=cfg.get("weight_dtype", "fp32")))
+    _mid = cfg.get("sd_model_id", "")
+    _wd = cfg.get("weight_dtype", "fp32")
+    if "xl" in str(_mid).lower():
+        from .sd_loader import load_sdxl
+        bundle = load_sdxl(model_id=_mid, device=device, dtype=_wd)
+    else:
+        bundle = (load_sd(model_id=_mid, device=device, dtype=_wd)
+                  if _mid else load_sd(device=device, dtype=_wd))
 
     manager = build_hyper(bundle, target_modules=tuple(cfg.get("target_modules", DEFAULT_TARGETS)),
                           n_tasks=len(cfg["concepts"]), task_cond=cfg.get("task_cond"),
@@ -113,21 +127,65 @@ def main():
     manager.train()
 
     specs = specs_from_config(cfg["concepts"])
+    if (cfg.get("task_cond") or {}).get("ortho_tokens"):
+        from .tokens import register_ortho_tokens
+        reg_ids = register_ortho_tokens(bundle, len(specs),
+                                        key_dim=int(cfg["task_cond"].get("key_dim", 128)))
+        print(f"[CL] ortho tokens registered: {list(reg_ids)[:3]}... ({len(reg_ids)})", flush=True)
     n_tasks = len(specs)
 
     # Option C: learned identifier tokens ("<Vk>") -- TI-style rows in the CLIP input embedding.
     tok_cfg = cfg.get("learned_tokens", {}) or {}
     use_tokens = bool(tok_cfg.get("enabled", False))
     token_ids, emb_weight, tok_lr = {}, None, 0.0
+    ortho_on = bool((cfg.get("task_cond") or {}).get("ortho_tokens"))
+    # dims [0, tail_lock) of an ortho row are the TASK KEY -- never trained, or routing breaks.
+    tail_lock = int((cfg.get("task_cond") or {}).get("key_dim", 128)) if ortho_on else 0
     if use_tokens:
-        from .tokens import add_learned_tokens
-        token_ids = add_learned_tokens(bundle, [(sp.identifier, sp.class_word) for sp in specs],
-                                       init_from_class=bool(tok_cfg.get("init_from_class", True)))
+        if ortho_on:
+            token_ids = {f"<V{k + 1}>": bundle.tokenizer.convert_tokens_to_ids(f"<V{k + 1}>")
+                         for k in range(len(specs))}
+            print(f"[CL] learned TAIL on ortho rows: dims [{tail_lock}:768) train, "
+                  f"[0:{tail_lock}) frozen (key)", flush=True)
+        else:
+            from .tokens import add_learned_tokens
+            token_ids = add_learned_tokens(bundle, [(sp.identifier, sp.class_word) for sp in specs],
+                                           init_from_class=bool(tok_cfg.get("init_from_class", True)))
         emb_weight = bundle.text_encoder.get_input_embeddings().weight
         emb_weight.requires_grad_(True)      # grads row-masked to the current task's token
         tok_lr = float(tok_cfg.get("lr", 5e-3))
         print(f"[CL] learned tokens ON: {sorted(token_ids)} (tok_lr={tok_lr})", flush=True)
 
+    box_aug_p = float(cfg.get("training", {}).get("box_aug_p", 0.5))
+    # segmentowana wklejka (objective v2): caly wyciety obiekt (RGBA) na naturalne tlo,
+    # strata BEZ maski -> ramka jest informacyjnie konieczna przy wysokim szumie
+    seg_dir = cfg.get("training", {}).get("seg_dir")
+    bg_dir = cfg.get("training", {}).get("bg_dir")
+    seg_bank, bg_bank = {}, []
+    if seg_dir and bg_dir:
+        import glob as _glob
+        from PIL import Image as _PIL
+        import numpy as _np
+        res0 = int(cfg.get("resolution", 512))
+        for f in sorted(_glob.glob(os.path.join(bg_dir, "*"))):
+            im = _PIL.open(f).convert("RGB").resize((res0, res0), _PIL.LANCZOS)
+            t = torch.from_numpy(_np.asarray(im)).permute(2, 0, 1).float() / 127.5 - 1.0
+            bg_bank.append(t)
+        for spec_ in specs:
+            fs = sorted(_glob.glob(os.path.join(seg_dir, spec_.concept_id, "*.png")))
+            cuts = []
+            for f in fs:
+                im = _PIL.open(f).convert("RGBA")
+                t = torch.from_numpy(_np.asarray(im)).permute(2, 0, 1).float()
+                cuts.append((t[:3] / 127.5 - 1.0, t[3:4] / 255.0))   # (rgb[-1,1], alfa[0,1])
+            if cuts:
+                seg_bank[spec_.concept_id] = cuts
+        print(f"[CL] seg-paste ON: tla {len(bg_bank)}, wycinki "
+              f"{ {k: len(v) for k, v in seg_bank.items()} }", flush=True)
+    if getattr(manager, "ground_cond", False):
+        from .regional import set_grounded
+        ng = set_grounded(bundle.unet, manager)
+        print(f"[CL] grounded attention na {ng} warstwach attn2", flush=True)
     tm_enabled = bool(cfg.get("token_mask_lora", False))
     if tm_enabled:
         from .tokens import token_span_mask
@@ -169,6 +227,7 @@ def main():
     params = [p for _, p in named]
     anchor_conds = []   # hyper conditioning of each learned concept's canonical prompt (reg anchors)
     gstep = 0
+    _clip_img = None                      # lazy: only built when sem_dim is on
     for k, spec in enumerate(specs):
         # Network weights PERSIST across tasks; fresh optimizer per task (clean per-task LR).
         # With task_cond: the CURRENT task's embedding V_k trains too (old V_i stay frozen).
@@ -191,7 +250,21 @@ def main():
             key_text = {"identifier": spec.identifier or f"V{k + 1}",
                         "index": f"V{k + 1}"}.get(mode, spec.diag_prompt)
             _, pooled_canon, _ = bundle.encode_text([key_text])
-            manager.set_canonical(k, pooled_canon[0])
+            sem_vec = None
+            if getattr(manager, "sem_dim", 0):
+                # semantic block = mean CLIP IMAGE embedding of this concept's reference photos.
+                # Images, not text: two same-class concepts have identical prompts here (the
+                # identifier is empty), so text carries no instance information at all.
+                import glob as _glob
+                paths = sorted(_glob.glob(os.path.join(spec.images_dir, "*")))
+                if not paths:
+                    raise RuntimeError(f"sem_dim set but no images for {spec.concept_id}")
+                if _clip_img is None:
+                    from .cifc_metrics import _Clip
+                    _clip_img = _Clip(device)
+                sem_vec = _clip_img.img_feats(paths).mean(0).cpu()
+                print(f"[CL] semantic key from {len(paths)} images of {spec.concept_id}", flush=True)
+            manager.set_canonical(k, pooled_canon[0], sem_vec=sem_vec)
         loader = DataLoader(ConceptDataset(spec, resolution, augment=bool(train.get("augment", False))),
                             batch_size=batch_size, shuffle=True,
                             drop_last=True, collate_fn=collate_fn,
@@ -212,28 +285,137 @@ def main():
             captions = batch["captions"]
             bsz = images.shape[0]
 
+            # `box_cond`: with prob box_aug_p shrink the photo and paste it at a random spot;
+            # the box is KNOWN exactly (that's the whole point of paste-supervision), and the
+            # diffusion loss is masked to the box so the delta learns nothing about the filler.
+            loss_mask = None
+            if getattr(manager, "box_cond", False) or getattr(manager, "ground_cond", False):
+                manager.cond_box = None
+                cuts = seg_bank.get(spec.concept_id)
+                if cuts and torch.rand(1).item() < box_aug_p:
+                    # OBJECTIVE v2: caly obiekt (miekka alfa) na losowym naturalnym tle,
+                    # strata na CALYM obrazie -- poza ramka nadzorem jest tlo, wiec przy
+                    # wysokim szumie ramka to jedyne zrodlo pozycji
+                    import torch.nn.functional as Fnn
+                    H = images.shape[-1]
+                    comp = []
+                    box = None
+                    for bi in range(bsz):
+                        rgb, al = cuts[int(torch.randint(0, len(cuts), (1,)).item())]
+                        ch, cw = rgb.shape[-2:]
+                        sc = float(torch.empty(1).uniform_(0.45, 0.85).item())
+                        r = sc * H / max(ch, cw)
+                        nh, nw = max(8, int(ch * r)), max(8, int(cw * r))
+                        rgb = Fnn.interpolate(rgb[None], size=(nh, nw), mode="bilinear",
+                                              align_corners=False)[0]
+                        al = Fnn.interpolate(al[None], size=(nh, nw), mode="bilinear",
+                                             align_corners=False)[0].clamp(0, 1)
+                        if box is None:      # JEDNA ramka na krok (set_ground jest per krok)
+                            x0 = int(torch.randint(0, H - nw + 1, (1,)).item())
+                            y0 = int(torch.randint(0, H - nh + 1, (1,)).item())
+                            box = ((x0 + nw / 2) / H, (y0 + nh / 2) / H, nw / H, nh / H)
+                        else:                # pozycja wspolna, wymiar moze sie minimalnie rozjechac
+                            x0 = min(max(int(box[0] * H - nw / 2), 0), H - nw)
+                            y0 = min(max(int(box[1] * H - nh / 2), 0), H - nh)
+                        bg = bg_bank[int(torch.randint(0, len(bg_bank), (1,)).item())].clone()
+                        reg = bg[:, y0:y0 + nh, x0:x0 + nw]
+                        bg[:, y0:y0 + nh, x0:x0 + nw] = reg * (1 - al) + rgb * al
+                        comp.append(bg)
+                    images = torch.stack(comp).to(device)
+                    manager.cond_box = box
+                elif not cuts and torch.rand(1).item() < box_aug_p and not (seg_dir and bg_dir):
+                    # stara wklejka prostokatna (objective v1) - tylko gdy seg-paste wylaczone
+                    import torch.nn.functional as Fnn
+                    sc = float(torch.empty(1).uniform_(0.45, 0.85).item())
+                    H = images.shape[-1]; hw = max(8, int(round(H * sc)) // 8 * 8)
+                    small = Fnn.interpolate(images, size=(hw, hw), mode="bilinear",
+                                            align_corners=False)
+                    x0 = int(torch.randint(0, H - hw + 1, (1,)).item())
+                    y0 = int(torch.randint(0, H - hw + 1, (1,)).item())
+                    canvas = torch.zeros_like(images)          # szare tlo w [-1,1]
+                    canvas[:, :, y0:y0 + hw, x0:x0 + hw] = small
+                    images = canvas
+                    manager.cond_box = ((x0 + hw / 2) / H, (y0 + hw / 2) / H, hw / H, hw / H)
+                    lm = torch.zeros(1, 1, H // 8, H // 8, device=device)
+                    lm[:, :, y0 // 8:(y0 + hw) // 8, x0 // 8:(x0 + hw) // 8] = 1.0
+                    loss_mask = lm
             cond_hidden, pooled, _ = bundle.encode_text(captions, train_tokens=cur_tid is not None)
             z0 = bundle.encode_images(images)
             noise = torch.randn_like(z0)
             t = torch.randint(0, bundle.num_train_timesteps, (bsz,), device=device)
+            if manager.cond_box is not None and float(cfg.get("training", {}).get("box_t_min_frac", 0.0)) > 0:
+                # na krokach z ramka: wysoki szum - tam z_t nie zdradza pozycji i ramka
+                # jest informacyjnie konieczna (sygnal placementu byl rozcienczany do ~20%)
+                lo = int(float(cfg["training"]["box_t_min_frac"]) * bundle.num_train_timesteps)
+                t = torch.randint(lo, bundle.num_train_timesteps, (bsz,), device=device)
             z_t = bundle.noise_scheduler.add_noise(z0, noise, t)
 
             tok_mask = (token_span_mask(bundle.tokenizer, captions, spec.replacement).to(device)
                         if tm_enabled else None)
+            # `scale_cond`: s is sampled per step and fed to the head instead of multiplying the
+            # delta. The s-weighted objective below is what gives s a meaning -- without it the
+            # head would ignore the input, since reconstruction alone always prefers max identity.
+            if getattr(manager, "latent_cond", False):
+                manager.cond_latent = manager.latent_stats(z_t).detach()
+            if getattr(manager, "time_cond", False):
+                # per-sample, not the batch mean: condition() broadcasts h[1,D] + emb[B,D],
+                # so each image gets the adapter belonging to ITS noise level
+                manager.cond_t = (t.float() / bundle.num_train_timesteps).to(device)
+            s_cur = 1.0
+            if getattr(manager, "scale_cond", False):
+                s_cur = float(torch.empty(1).uniform_(scale_min, 1.0).item())
+                manager.cond_scale_val = s_cur
+            if getattr(manager, "ground_cond", False):
+                manager.set_ground(k, manager.cond_box)
             manager.set_context(pooled, task_idx=k, token_mask=tok_mask)  # timestep-independent LoRA
             manager.compute_and_cache_loras()
             manager.enable_lora()
-            eps_pred = unet(z_t, t, encoder_hidden_states=cond_hidden).sample
-            loss = reconstruction_loss(eps_pred.float(), noise.float())   # new-concept reconstruction
+            ac = bundle.added_cond(z_t.shape[0], resolution, resolution, pooled=pooled) \
+                if getattr(bundle, "is_sdxl", False) else None
+            eps_pred = unet(z_t, t, encoder_hidden_states=cond_hidden,
+                            added_cond_kwargs=ac).sample
+            if loss_mask is not None:
+                d2 = (eps_pred.float() - noise.float()) ** 2 * loss_mask
+                loss = d2.sum() / (loss_mask.sum() * eps_pred.shape[0] * eps_pred.shape[1]).clamp_min(1.0)
+            else:
+                loss = reconstruction_loss(eps_pred.float(), noise.float())   # new-concept reconstruction
+            if s_cur < 1.0:
+                # BUDGET, not output interpolation. A convex mix of eps-targets is equivalent to
+                # regressing s*eps + (1-s)*eps_base, which to first order is exactly what scaling
+                # the adapter by s already gives -- so it could not beat the status quo. Penalising
+                # ||dW|| instead forces the head to CHOOSE where to spend a shrinking budget, which
+                # uniform scaling cannot do.
+                dw = torch.stack([ (xl.float()**2).sum() + (xr.float()**2).sum()
+                                   for xl, xr in (manager.get_cached_lora(n) for n in manager.layer_names) ]).sum()
+                loss = loss + scale_kappa * (1.0 - s_cur) * dw / len(manager.layer_names)
 
             optimizer.zero_grad(set_to_none=True)
             reg_val = 0.0
             emb_params = [emb_weight] if cur_tid is not None else []
+            # The prompt-modulation net is NOT part of `params` (which is heads-only) but still
+            # needs a gradient: the manual autograd.grad path below bypasses .backward(), so
+            # anything omitted here would sit in the optimizer and never move.
+            mod_params = ([] if getattr(manager, 'ground_head', None) is None else
+                          list(manager.ground_head.parameters()) + list(manager.ground_gates.parameters())
+                          + (list(manager.ground_pos_proj.parameters()) + list(manager.ground_box_proj.parameters())
+                             if getattr(manager, 'ground_pos_proj', None) is not None else [])
+                          + ([manager.ground_geo_a, manager.ground_geo_b]
+                             if getattr(manager, 'ground_geo_a', None) is not None else [])
+                          + (list(manager.ground_gsa_mods.parameters()) + list(manager.ground_film.parameters())
+                             if getattr(manager, 'ground_gsa_mods', None) is not None else [])) \
+                         + ([] if getattr(manager, 'box_emb', None) is None else list(manager.box_emb.parameters())) \
+                         + ([] if manager.prompt_mod is None else list(manager.prompt_mod.parameters())) \
+                         + ([] if manager.prompt_gate is None else list(manager.prompt_gate.parameters())) \
+                         + ([] if getattr(manager, 'scale_emb', None) is None else list(manager.scale_emb.parameters())) \
+                         + ([] if getattr(manager, 'time_emb', None) is None else list(manager.time_emb.parameters())) \
+                         + ([] if getattr(manager, 'latent_emb', None) is None else list(manager.latent_emb.parameters()))
             if targets is not None:
                 # Stage 1: candidate step that minimizes ONLY the new-task loss (detached).
-                g_all = torch.autograd.grad(loss, params + task_params + emb_params, retain_graph=False)
+                g_all = torch.autograd.grad(loss, params + task_params + emb_params + mod_params,
+                                            retain_graph=False)
                 g = g_all[:len(params)]
                 g_task = g_all[len(params):len(params) + len(task_params)]
+                g_mod = g_all[len(g_all) - len(mod_params):] if mod_params else []
                 delta = {nm: (-lookahead_lr * gi).detach() for (nm, _), gi in zip(named, g)}
                 # Stage 2: anchor the hypernet output at the lookahead params Theta + DeltaTheta.
                 perturbed = {nm: p + delta[nm] for nm, p in named}
@@ -243,19 +425,25 @@ def main():
                     p.grad = gi + gr
                 for p, gi in zip(task_params, g_task):     # V_k: task grad only (anchors are frozen)
                     p.grad = gi
+                for p, gi in zip(mod_params, g_mod):   # prompt modulation: task grad only
+                    p.grad = gi
                 if emb_params:
-                    g_emb = g_all[-1]
+                    g_emb = g_all[len(params) + len(task_params)]
                     emb_weight.grad = torch.zeros_like(g_emb)
                     emb_weight.grad[cur_tid] = g_emb[cur_tid]   # only the current identifier row trains
+                    if tail_lock:
+                        emb_weight.grad[cur_tid, :tail_lock] = 0.0   # key block stays frozen
                 reg_val = float(reg.item())
             else:
                 loss.backward()
                 if emb_params and emb_weight.grad is not None:
                     keep = emb_weight.grad[cur_tid].clone()     # only the current identifier row trains
+                    if tail_lock:
+                        keep[:tail_lock] = 0.0                 # key block stays frozen
                     emb_weight.grad = torch.zeros_like(emb_weight.grad)
                     emb_weight.grad[cur_tid] = keep
             if grad_clip > 0:
-                torch.nn.utils.clip_grad_norm_(params + task_params + emb_params, grad_clip)
+                torch.nn.utils.clip_grad_norm_(params + task_params + emb_params + mod_params, grad_clip)
             optimizer.step()
 
             gstep += 1
@@ -265,7 +453,7 @@ def main():
             if wandb is not None:
                 wandb.log({"loss": float(loss.item()), "reg": reg_val, "task": k, "task_step": step,
                            "lora_magnitude": float(manager.current_lora_magnitude().item())}, step=gstep)
-                if gstep % diag_freq == 0:
+                if diag_freq > 0 and gstep % diag_freq == 0:   # 0 -> no mid-training images
                     # diagnostic generations for ALL concepts seen so far -> forgetting visible live
                     logs = {f"diag/{specs[j].concept_id}":
                             wandb.Image(_gen_one(bundle, manager, specs[j].diag_prompt, gsteps, gscale,
@@ -273,6 +461,38 @@ def main():
                                                  mask_phrase=specs[j].replacement if tm_enabled else None),
                                         caption=specs[j].diag_prompt)
                             for j in range(k + 1)}
+                    if getattr(manager, "ground_cond", False):
+                        # diag_bbox: generacje ze STEROWANA ramka + ramka narysowana na obrazku;
+                        # obiekt powinien chodzic za prostokatem, styl pomijamy (globalny)
+                        from PIL import Image as _PIL, ImageDraw as _Draw
+                        from torchvision.transforms.functional import to_pil_image as _to_pil
+                        if getattr(spec, "category", None) != "style":
+                            for side, bb in (("L", (0.25, 0.5, 0.5, 1.0)), ("R", (0.75, 0.5, 0.5, 1.0))):
+                                t = _gen_one(bundle, manager, spec.diag_prompt, gsteps, gscale, seed0,
+                                             task_idx=k,
+                                             mask_phrase=spec.replacement if tm_enabled else None, box=bb)
+                                pil = _to_pil(t); W, H = pil.size
+                                cx, cy, bw, bh = bb
+                                _Draw.Draw(pil).rectangle(
+                                    [(cx - bw / 2) * W, (cy - bh / 2) * H,
+                                     (cx + bw / 2) * W, (cy + bh / 2) * H],
+                                    outline=(255, 0, 0), width=4)
+                                logs[f"diag_bbox/{spec.concept_id}_{side}"] = wandb.Image(
+                                    pil, caption=f"box={bb}")
+                        gv = [float(torch.tanh(p.detach()).abs().max())
+                              for p in manager.ground_gates.values()]
+                        gv.sort()
+                        logs["ground/gate_max"] = gv[-1]
+                        logs["ground/gate_median"] = gv[len(gv) // 2]
+                        with torch.no_grad():
+                            manager.set_ground(k, (0.25, 0.5, 0.5, 1.0))
+                            logs["ground/e_norm"] = float(manager._ground_vec.norm())
+                            if getattr(manager, "ground_geo", False):
+                                gm = torch.sigmoid(manager.geo_logit(
+                                    32, 32, manager._ground_vec.device, torch.float32))
+                                logs["ground/geo_gate_map_L"] = wandb.Image(
+                                    _to_pil(gm.reshape(1, 32, 32).cpu()),
+                                    caption="sigmoid(geo_logit) dla ramki L - powinna zbiegac do maski boxa")
                     wandb.log(logs, step=gstep)
 
         # just-learned concept (fresh)
@@ -289,6 +509,12 @@ def main():
             manager.freeze_task_basis(k)
             if reg_weight > 0:
                 _, pooled_k, _ = bundle.encode_text([spec.diag_prompt])
+                if getattr(manager, "time_cond", False):
+                    manager.cond_t = 0.5      # anchor a fixed slice of the t-family
+                if getattr(manager, "latent_cond", False):
+                    manager.cond_latent = None   # anchor the latent-free conditioning
+                if getattr(manager, "box_cond", False):
+                    manager.cond_box = None      # anchor at the canonical full frame
                 anchor_conds.append(manager.condition(pooled_k, k)[0].detach())
         # per-task checkpoint (for the CIDM/CIFC forgetting-matrix eval: each task's model state)
         save_hyper(manager, os.path.join(output_dir, "ckpts", f"hyper_after_task{k:02d}.pt"),
@@ -300,6 +526,15 @@ def main():
         _sample(bundle, manager, spec.diag_prompt,
                 os.path.join(output_dir, "final", f"task{k:02d}_{spec.concept_id}"), n_eval, gsteps, gscale,
                 seed0, task_idx=k, mask_phrase=spec.replacement if tm_enabled else None)
+
+    if wandb is not None:
+        # single end-of-run image panel (mid-training diagnostics can be off via diagnostic_freq: 0)
+        wandb.log({f"final/{s.concept_id}":
+                   wandb.Image(_gen_one(bundle, manager, s.diag_prompt, gsteps, gscale, seed0,
+                                        task_idx=j,
+                                        mask_phrase=s.replacement if tm_enabled else None),
+                               caption=s.diag_prompt)
+                   for j, s in enumerate(specs)}, step=gstep)
 
     save_hyper(manager, os.path.join(output_dir, "hyper.pt"), extra=_tok_extra())
     if wandb is not None:

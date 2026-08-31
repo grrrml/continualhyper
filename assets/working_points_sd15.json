@@ -1,0 +1,10 @@
+{
+ "F_base": "0.7",
+ "F_base_s2025": "0.7",
+ "F_base_s2026": "0.7",
+ "bl_lwf_lam10": "0.8",
+ "bl_ewc_lam100000": "1.0",
+ "bl_clora_lam100": "0.8",
+ "bl_finetune": "0.5",
+ "bl_l2dm": "0.5"
+}

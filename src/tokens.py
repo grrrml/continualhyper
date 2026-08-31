@@ -70,3 +70,30 @@ def token_span_mask(tokenizer, prompts, phrase, max_length=None):
         if mask[b].sum() == 0:
             mask[b] = 1.0
     return mask
+
+
+@torch.no_grad()
+def register_ortho_tokens(bundle, n_tasks: int, key_dim: int = 128,
+                          seed_base: int = 1234) -> Dict[str, int]:
+    """<V1>..<VT> as vocabulary tokens whose rows carry the task keys.
+
+    Two-block row: dims [0, key_dim) hold the SAME deterministic orthogonal key the manager
+    draws in set_canonical (seed_base + k), scaled to the vocabulary's mean row norm so the
+    encoder sees a sanely-sized vector; dims [key_dim, 768) start at zero (step (iii) makes
+    them the concept's learned text content). Rows are deterministic -> nothing to checkpoint;
+    eval re-registers identically. Rows are frozen here; the trainer may unfreeze the tail.
+    """
+    names = [f"<V{k + 1}>" for k in range(n_tasks)]
+    added = bundle.tokenizer.add_tokens(names)
+    bundle.text_encoder.resize_token_embeddings(len(bundle.tokenizer))
+    emb = bundle.text_encoder.get_input_embeddings().weight
+    emb.requires_grad_(False)
+    base_norm = emb[:49408].norm(dim=1).mean()
+    ids = bundle.tokenizer.convert_tokens_to_ids(names)
+    for k, tid in enumerate(ids):
+        g = torch.Generator().manual_seed(seed_base + k)
+        key = torch.randn(key_dim, generator=g)
+        row = torch.zeros(emb.shape[1])
+        row[:key_dim] = key / key.norm() * float(base_norm)
+        emb[tid] = row.to(dtype=emb.dtype, device=emb.device)
+    return dict(zip(names, ids))

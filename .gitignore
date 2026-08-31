@@ -28,3 +28,6 @@ venv/
 # local-only (kept on disk, not shared)
 CLAUDE.md
 scripts/sbatch_*.sh
+
+# katalog roboczy poterow (nie commitujemy)
+work/

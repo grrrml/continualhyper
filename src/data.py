@@ -32,6 +32,9 @@ class ConceptSpec:
     class_word: str
     identifier: str                       # e.g. "V1"
     caption_dir: Optional[str] = None      # CIDM per-image captions; None -> use `prompt`
+    attr_strip: Optional[list] = None      # frazy atrybutowe do zjedzenia przed podmiana
+                                           # (np. "red backpack" -> class_word): atrybut opisany
+                                           # tekstem to atrybut, ktorego adapter sie nie nauczy
     prompt: Optional[str] = None           # fallback + canonical diagnostic prompt
     category: Optional[str] = None         # eval category (pet/plushy/style), carried downstream
 
@@ -87,6 +90,8 @@ class ConceptDataset(Dataset):
                 with open(cap_path) as f:
                     cap = f.read().strip()
                 repl, cls = self.spec.replacement, self.spec.class_word
+                for ph in (self.spec.attr_strip or []):
+                    cap = cap.replace(ph, cls)
                 # CIDM-style: replace the class word with the identifier phrase; if the class word
                 # is absent, prepend the phrase so the identifier is always present.
                 return cap.replace(cls, repl) if cls in cap else f"{repl}, {cap}"
@@ -116,6 +121,7 @@ def specs_from_config(concept_cfgs: List[dict]) -> List[ConceptSpec]:
             images_dir=c["images_dir"],
             class_word=c.get("class_word", c["concept_id"]),
             identifier=c.get("identifier", f"V{i + 1}"),
+            attr_strip=c.get("attr_strip"),
             caption_dir=c.get("caption_dir"),
             prompt=c.get("prompt"),
             category=c.get("category"),

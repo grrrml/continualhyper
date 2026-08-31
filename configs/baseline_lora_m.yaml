@@ -1,0 +1,110 @@
+seed: 2024
+resolution: 512
+weight_dtype: fp32
+sd_model_id: stable-diffusion-v1-5/stable-diffusion-v1-5
+output_dir: ./outputs/baseline/lora_m
+hyper:
+  rank: 4
+learned_tokens:
+  enabled: true
+  init_from_class: true
+  lr: 0.001
+target_modules:
+- attn2.to_q
+- attn2.to_k
+- attn2.to_v
+- attn2.to_out.0
+concepts:
+- concept_id: cifc_dog
+  images_dir: data/CIFC/datasets/images/dog
+  caption_dir: data/CIFC/datasets/caption/dog
+  class_word: dog
+  category: pet
+  identifier: <V1>
+  prompt: a photo of <V1> dog
+- concept_id: cifc_duck_toy
+  images_dir: data/CIFC/datasets/images/duck_toy
+  caption_dir: data/CIFC/datasets/caption/duck_toy
+  class_word: duck toy
+  category: plushy
+  identifier: <V2>
+  prompt: a photo of <V2> duck toy
+  eval_prefix: yellow rubber
+- concept_id: cifc_cat
+  images_dir: data/CIFC/datasets/images/cat
+  caption_dir: data/CIFC/datasets/caption/cat
+  class_word: cat
+  category: pet
+  identifier: <V3>
+  prompt: a photo of <V3> cat
+- concept_id: cifc_backpack
+  images_dir: data/CIFC/datasets/images/backpack
+  caption_dir: data/CIFC/datasets/caption/backpack
+  class_word: backpack
+  category: plushy
+  identifier: <V4>
+  prompt: a photo of <V4> backpack
+  eval_prefix: red
+- concept_id: cifc_teddybear
+  images_dir: data/CIFC/datasets/images/teddybear
+  caption_dir: data/CIFC/datasets/caption/teddybear
+  class_word: teddy bear
+  category: plushy
+  identifier: <V5>
+  prompt: a photo of <V5> teddy bear
+- concept_id: cifc_painting
+  images_dir: data/CIFC/datasets/images/painting
+  caption_dir: data/CIFC/datasets/caption/painting
+  class_word: painting
+  category: style
+  identifier: <V6>
+  prompt: a photo of <V6> painting
+- concept_id: cifc_dog2
+  images_dir: data/CIFC/datasets/images/dog2
+  caption_dir: data/CIFC/datasets/caption/dog2
+  class_word: dog
+  category: pet
+  identifier: <V7>
+  prompt: a photo of <V7> dog
+- concept_id: cifc_drawing
+  images_dir: data/CIFC/datasets/images/drawing
+  caption_dir: data/CIFC/datasets/caption/drawing
+  class_word: drawing
+  category: style
+  identifier: <V8>
+  prompt: a photo of <V8> drawing
+- concept_id: cifc_cat2
+  images_dir: data/CIFC/datasets/images/cat2
+  caption_dir: data/CIFC/datasets/caption/cat2
+  class_word: cat
+  category: pet
+  identifier: <V9>
+  prompt: a photo of <V9> cat
+- concept_id: cifc_ink_painting
+  images_dir: data/CIFC/datasets/images/ink_painting
+  caption_dir: data/CIFC/datasets/caption/ink_painting
+  class_word: ink painting
+  category: style
+  identifier: <V10>
+  prompt: a photo of <V10> ink painting
+training:
+  steps_per_task: 800
+  batch_size: 2
+  lr: 0.0001
+  weight_decay: 0.0
+  grad_clip: 1.0
+  log_every: 200
+  num_workers: 2
+  diagnostic_freq: 0
+infer:
+  steps: 50
+  guidance_scale: 7.5
+  n_images: 1
+wandb:
+  enabled: true
+  project: ContinualHyper
+  name: bl_lora_m
+baseline:
+  method: lora_m
+  lam: 0.0
+  fisher_batches: 200

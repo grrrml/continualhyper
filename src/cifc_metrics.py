@@ -55,6 +55,18 @@ class _Clip:
         return torch.cat(out) if out else torch.empty(0)
 
     @torch.no_grad()
+    def img_feats_from_tensor(self, imgs):
+        """imgs: [N,3,H,W] in [0,1] -> L2-normalised CLIP image features (for memory banks)."""
+        out = []
+        for b in _chunks(list(range(imgs.shape[0])), 64):
+            batch = imgs[b[0]:b[-1] + 1]
+            pil = [Image.fromarray((x.permute(1, 2, 0).clamp(0, 1) * 255)
+                                   .byte().cpu().numpy()) for x in batch]
+            inp = self.p(images=pil, return_tensors="pt").to(self.device)
+            out.append(F.normalize(self.m.get_image_features(**inp), dim=-1))
+        return torch.cat(out) if out else torch.empty(0)
+
+    @torch.no_grad()
     def txt_feats(self, texts):
         out = []
         for b in _chunks(texts, 64):

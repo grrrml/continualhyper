@@ -41,11 +41,13 @@ def _read_prompts(category):
 
 @torch.no_grad()
 def gen_concept(bundle, manager, gen_repl, clipt_repl, category, out_dir, n, steps, gscale, seed,
-                task_idx=None, mask_phrase=None, lora_start_frac=0.0):
+                task_idx=None, mask_phrase=None, lora_start_frac=0.0, sample_batch=1):
     prompts = _read_prompts(category)
     sdir = os.path.join(out_dir, "samples")
     os.makedirs(sdir, exist_ok=True)
     uncond_hidden, _, _ = bundle.encode_text([NEG])
+    res = int(getattr(bundle, "default_resolution", 512))     # 512 (SD-1.5) / 1024 (SDXL)
+    lat_shape = (bundle.latent_channels, res // 8, res // 8)
     info, count = [], 0
     for p in prompts:
         gen_prompt = p.replace("<TOK>", gen_repl)      # generation: "<eval_prefix> V<k> <class>"
@@ -55,15 +57,27 @@ def gen_concept(bundle, manager, gen_repl, clipt_repl, category, out_dir, n, ste
         if mask_phrase:
             from .tokens import token_span_mask
             token_mask = token_span_mask(bundle.tokenizer, [gen_prompt], mask_phrase)
-        for _ in range(n):
-            g = torch.Generator(device=bundle.device).manual_seed(seed + count)
-            img = ddim_sample(bundle, manager, cond_hidden, uncond_hidden, pooled,
-                              num_inference_steps=steps, guidance_scale=gscale, batch_size=1,
-                              generator=g, scheduler=bundle.dpm_scheduler, task_idx=task_idx,
-                              token_mask=token_mask, lora_start_frac=lora_start_frac)
-            save_image(img, os.path.join(sdir, f"{count}.jpg"))
-            info.append({str(count): clipt_text})
-            count += 1
+        done = 0
+        while done < n:
+            bs = min(sample_batch, n - done)
+            # one generator PER IMAGE, seeded exactly as in the unbatched path -> the drawn
+            # latents (and therefore the images) are identical regardless of sample_batch
+            lat = torch.stack([
+                torch.randn(lat_shape, generator=torch.Generator(device=bundle.device)
+                            .manual_seed(seed + count + i), device=bundle.device,
+                            dtype=bundle.dtype)
+                for i in range(bs)])
+            imgs = ddim_sample(bundle, manager, cond_hidden, uncond_hidden, pooled,
+                               num_inference_steps=steps, guidance_scale=gscale, batch_size=bs,
+                               height=res, width=res,
+                               scheduler=bundle.dpm_scheduler, task_idx=task_idx,
+                               token_mask=token_mask, lora_start_frac=lora_start_frac,
+                               latents=lat)
+            for i in range(bs):
+                save_image(imgs[i], os.path.join(sdir, f"{count}.jpg"))
+                info.append({str(count): clipt_text})
+                count += 1
+            done += bs
     with open(os.path.join(out_dir, "prompts.json"), "w") as f:
         json.dump(info, f)
     return count
@@ -84,6 +98,12 @@ def parse_args():
                    help="comma-separated concept_ids to (re)generate; others left untouched")
     p.add_argument("--lora_scale", type=float, default=1.0,
                    help="inference-time LoRA strength (1.0 = trained strength)")
+    p.add_argument("--eval_dtype", default=None, choices=["fp32", "fp16", "bf16"],
+                   help="backbone dtype for generation (hyper heads stay fp32); default: config")
+    p.add_argument("--tf32", action="store_true",
+                   help="allow TF32 matmuls (fp32 path only) -- large speedup on A100")
+    p.add_argument("--sample_batch", type=int, default=10,
+                   help="images generated per UNet batch (identical output, ~4x faster)")
     p.add_argument("--lora_scale_map", default=None,
                    help='per-group scales, e.g. "attn2.to_k=0.4,attn2.to_v=0.4,attn2.to_q=0.8"; '
                         'patterns as in target_modules, fallback --lora_scale')
@@ -100,14 +120,63 @@ def main():
     cfg = load_config(args.config)
     out_root = args.out_root or os.path.join(os.path.dirname(args.ckpt_dir.rstrip("/")), "cifc_eval")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if args.tf32:
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        print("[gen] TF32 matmuls enabled", flush=True)
+    dtype = args.eval_dtype or cfg.get("weight_dtype", "fp32")
 
-    bundle = (load_sd(model_id=cfg["sd_model_id"], device=device, dtype=cfg.get("weight_dtype", "fp32"))
-              if cfg.get("sd_model_id") else load_sd(device=device, dtype=cfg.get("weight_dtype", "fp32")))
-    manager = build_hyper(bundle, target_modules=tuple(cfg.get("target_modules", DEFAULT_TARGETS)),
-                          n_tasks=len(cfg["concepts"]), task_cond=cfg.get("task_cond"),
-                          **cfg.get("hyper", {}))
+    _mid = cfg.get("sd_model_id", "")
+    if "xl" in str(_mid).lower():
+        from .sd_loader import load_sdxl
+        bundle = load_sdxl(model_id=_mid, device=device, dtype=dtype)
+    else:
+        bundle = (load_sd(model_id=_mid, device=device, dtype=dtype)
+                  if _mid else load_sd(device=device, dtype=dtype))
+    if (cfg.get("task_cond") or {}).get("ortho_tokens"):
+        from .tokens import register_ortho_tokens
+        register_ortho_tokens(bundle, len(cfg["concepts"]),
+                              key_dim=int(cfg["task_cond"].get("key_dim", 128)))
+    bl_cfg = cfg.get("baseline", {}) or {}
+    svd_cfg = cfg.get("svdiff", {}) or {}
+    if svd_cfg.get("enabled"):
+        # SVDiff backbone (L2DM): spectral shifts modify the weights; no adapter cache involved
+        from .svdiff import inject_svdiff, load_shift_state, set_scale
+        from .train_l2dm import _Plain
+        swapped = inject_svdiff(bundle.unet)
+        if svd_cfg.get("text_encoder", True):
+            swapped += inject_svdiff(bundle.text_encoder)
+        manager = _Plain()
+        bundle.unet.hyper = manager
+        set_scale(swapped, float(args.lora_scale))     # same knob as our LoRA scale
+        print(f"[gen] SVDiff: {len(swapped)} warstw, skala {args.lora_scale}", flush=True)
+    elif bl_cfg:
+        from .baselines import StaticLoRABank
+        from .injection import inject_lora
+        wrappers = inject_lora(bundle.unet, tuple(cfg.get("target_modules", DEFAULT_TARGETS)))
+        for _, w in wrappers:
+            w.set_parent(bundle.unet)
+        method = bl_cfg.get("method", "finetune")
+        manager = StaticLoRABank(wrappers, rank=int(cfg.get("hyper", {}).get("rank", 4)),
+                                 per_task=method in ("clora", "lora_m", "lora_c", "lora_solo"),
+                                 n_tasks=len(cfg["concepts"])).to(device)
+        bundle.unet.hyper = manager
+        print(f"[gen] baseline bank: {method}, {len(wrappers)} layers", flush=True)
+    else:
+        manager = build_hyper(bundle, target_modules=tuple(cfg.get("target_modules", DEFAULT_TARGETS)),
+                              n_tasks=len(cfg["concepts"]), task_cond=cfg.get("task_cond"),
+                              **cfg.get("hyper", {}))
+    if getattr(manager, "ground_cond", False):
+        from .regional import set_grounded
+        set_grounded(bundle.unet, manager)
     manager.eval()
-    manager.lora_scale = float(args.lora_scale)
+    if getattr(manager, "scale_cond", False):
+        # scale is an INPUT to the head here, not a multiplier -- multiplying as well would
+        # apply the knob twice and make the sweep meaningless
+        manager.cond_scale_val = float(args.lora_scale)
+        manager.lora_scale = 1.0
+    else:
+        manager.lora_scale = float(args.lora_scale)
     if args.lora_scale_map:
         manager.lora_scale_map = [(kv.split("=")[0], float(kv.split("=")[1]))
                                   for kv in args.lora_scale_map.split(",")]
@@ -119,7 +188,7 @@ def main():
     n_tasks = len(concepts)
     tok_cfg = cfg.get("learned_tokens", {}) or {}
     use_tokens = bool(tok_cfg.get("enabled", False))
-    if use_tokens:
+    if use_tokens and not (cfg.get("task_cond") or {}).get("ortho_tokens"):
         from .tokens import add_learned_tokens
         add_learned_tokens(bundle, [(c.get("identifier", f"V{i + 1}"), c["class_word"])
                                     for i, c in enumerate(concepts)], init_from_class=False)
@@ -130,11 +199,28 @@ def main():
     only = set(args.only_concepts.split(",")) if args.only_concepts else None
 
     for k in task_ks:
-        ckpt = os.path.join(args.ckpt_dir, f"hyper_after_task{k:02d}.pt")
+        ckpt = os.path.join(args.ckpt_dir,
+                            f"shifts_after_task{k:02d}.pt" if svd_cfg.get("enabled")
+                            else (f"bank_after_task{k:02d}.pt" if bl_cfg
+                                  else f"hyper_after_task{k:02d}.pt"))
         if not os.path.exists(ckpt):
             print(f"[gen] MISSING {ckpt} — skipping task {k}", flush=True)
             continue
-        blob = load_hyper(manager, ckpt, map_location=str(device))
+        if svd_cfg.get("enabled"):
+            from .svdiff import load_shift_state
+            blob = torch.load(os.path.join(args.ckpt_dir, f"shifts_after_task{k:02d}.pt"),
+                              map_location=str(device))
+            load_shift_state(swapped, blob["shifts"])
+        elif bl_cfg:
+            blob = torch.load(os.path.join(args.ckpt_dir, f"bank_after_task{k:02d}.pt"),
+                              map_location=str(device))
+            manager.load_state_dict(blob["bank"])
+            manager._active = int(blob.get("active", 1))
+            # LoRA-C composes the adapters of all concepts seen so far, one UNet pass each
+            manager.compose_tasks = (list(range(manager._active))
+                                     if bl_cfg.get("method") == "lora_c" else None)
+        else:
+            blob = load_hyper(manager, ckpt, map_location=str(device))
         if use_tokens and blob.get("learned_tokens"):
             from .tokens import apply_learned_tokens
             apply_learned_tokens(bundle, blob["learned_tokens"])   # rows as of THIS checkpoint
@@ -142,6 +228,11 @@ def main():
             c = concepts[j]
             if only is not None and c["concept_id"] not in only:
                 continue                                    # leave already-generated cells untouched
+            if bl_cfg.get("method") == "lora_solo":
+                # THE control baseline: ten independently trained LoRAs, the right one picked by
+                # oracle task index. Same deployment size and same task-id requirement as ours --
+                # if it matches us, the hypernetwork buys nothing on this benchmark.
+                manager.solo_task = j
             prefix = c.get("eval_prefix", "").strip()       # e.g. "yellow rubber" (duck), "red" (backpack)
             ident, cls, cat = c.get("identifier", f"V{j+1}"), c["class_word"], c["category"]
             gen_repl = " ".join(x for x in (prefix, ident, cls) if x)   # ident may be "" (no-id mode)
@@ -152,7 +243,8 @@ def main():
                                task_idx=j,
                                mask_phrase=(" ".join(x for x in (ident, cls) if x)
                                             if cfg.get("token_mask_lora") else None),
-                               lora_start_frac=float(args.lora_start_frac))
+                               lora_start_frac=float(args.lora_start_frac),
+                               sample_batch=int(args.sample_batch))
             print(f"[gen] after_task{k:02d} / {c['concept_id']} ({cat}, '{gen_repl}'): {nimg} imgs",
                   flush=True)
     print(f"[gen] DONE -> {out_root}", flush=True)

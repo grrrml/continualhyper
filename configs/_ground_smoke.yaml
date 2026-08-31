@@ -1,0 +1,67 @@
+seed: 2024
+resolution: 512
+weight_dtype: fp32
+sd_model_id: stable-diffusion-v1-5/stable-diffusion-v1-5
+output_dir: ./outputs/probe/ground_smoke
+hyper:
+  rank: 4
+  head_hidden: 50
+  alpha_init: 1.0
+  learn_alpha: true
+task_cond:
+  enabled: true
+  preserve_norm: false
+  learn_v: false
+  key_prompt: index
+  key_dim: 128
+  ground_cond: true
+token_mask_lora: true
+strip_identifier: true
+target_modules:
+- attn2.to_q
+- attn2.to_k
+- attn2.to_v
+- attn2.to_out.0
+concepts:
+- concept_id: cifc_dog
+  images_dir: data/CIFC/datasets/images/dog
+  caption_dir: data/CIFC/datasets/caption/dog
+  class_word: dog
+  category: pet
+  identifier: ''
+  prompt: a photo of dog
+- concept_id: cifc_duck_toy
+  images_dir: data/CIFC/datasets/images/duck_toy
+  caption_dir: data/CIFC/datasets/caption/duck_toy
+  class_word: duck toy
+  category: plushy
+  identifier: ''
+  prompt: a photo of duck toy
+  eval_prefix: yellow rubber
+- concept_id: cifc_cat
+  images_dir: data/CIFC/datasets/images/cat
+  caption_dir: data/CIFC/datasets/caption/cat
+  class_word: cat
+  category: pet
+  identifier: ''
+  prompt: a photo of cat
+training:
+  steps_per_task: 20
+  batch_size: 2
+  lr: 0.0001
+  weight_decay: 0.0
+  grad_clip: 1.0
+  log_every: 5
+  num_workers: 2
+  diagnostic_freq: 200
+  box_aug_p: 0.7
+infer:
+  steps: 50
+  guidance_scale: 7.5
+wandb:
+  enabled: false
+  project: ContinualHyper
+  name: P_ground
+reg:
+  weight: 100.0
+  lookahead_lr: 0.0001

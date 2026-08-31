@@ -64,6 +64,11 @@ class ModelBundle:
     num_train_timesteps: int              # =1000
     vae_scale_factor: float               # latent scaling (=0.18215)
     model_id: str
+    # --- SDXL (None/False on SD-1.5) ---
+    text_encoder_2: Optional[object] = None    # CLIPTextModelWithProjection (1280)
+    tokenizer_2: Optional[object] = None
+    is_sdxl: bool = False
+    default_resolution: int = 512
 
     @property
     def latent_channels(self) -> int:
@@ -95,12 +100,39 @@ class ModelBundle:
         )
         input_ids = batch.input_ids.to(self.device)
         attention_mask = batch.attention_mask.to(self.device)
-        if train_tokens:
-            out = self.text_encoder(input_ids=input_ids)
-        else:
-            with torch.no_grad():
+        if not self.is_sdxl:
+            if train_tokens:
                 out = self.text_encoder(input_ids=input_ids)
-        return out.last_hidden_state, out.pooler_output, attention_mask
+            else:
+                with torch.no_grad():
+                    out = self.text_encoder(input_ids=input_ids)
+            return out.last_hidden_state, out.pooler_output, attention_mask
+        # SDXL: two encoders, contexts concatenated on the CHANNEL axis -> [B, 77, 2048];
+        # the sequence axis stays 77, so the token mask stays a single [B,77] (plan, Phase 5).
+        ids2 = self.tokenizer_2(prompts, padding="max_length",
+                                max_length=self.tokenizer_2.model_max_length,
+                                truncation=True, return_tensors="pt").input_ids.to(self.device)
+        # both tokenizers share the BPE for content; identifiers added to one must be in both
+        ctx = torch.enable_grad() if train_tokens else torch.no_grad()
+        with ctx:
+            o1 = self.text_encoder(input_ids=input_ids, output_hidden_states=True)
+            o2 = self.text_encoder_2(input_ids=ids2, output_hidden_states=True)
+            h1 = o1.hidden_states[-2]                 # SDXL uses the PENULTIMATE layer
+            h2 = o2.hidden_states[-2]
+            pooled = o2.text_embeds                   # pooled projection of encoder-2 (1280)
+        return torch.cat([h1, h2], dim=-1), pooled, attention_mask
+
+    def added_cond(self, batch_size: int, height: Optional[int] = None,
+                   width: Optional[int] = None, pooled: Optional[torch.Tensor] = None) -> dict:
+        """SDXL micro-conditioning: {text_embeds, time_ids}. Empty dict on SD-1.5."""
+        if not self.is_sdxl:
+            return {}
+        h = height or self.default_resolution; w = width or self.default_resolution
+        tid = torch.tensor([h, w, 0, 0, h, w], device=self.device, dtype=self.dtype)
+        pe = pooled.to(self.device, self.dtype)
+        if pe.shape[0] != batch_size:          # one prompt, many images: expand to the batch
+            pe = pe[:1].expand(batch_size, -1)
+        return {"text_embeds": pe, "time_ids": tid[None].expand(batch_size, -1)}
 
     # ------------------------------------------------------------------ vae
     @torch.no_grad()
@@ -109,13 +141,18 @@ class ModelBundle:
         images = images.to(self.device, dtype=self.vae.dtype)
         posterior = self.vae.encode(images).latent_dist
         z = posterior.sample() * self.vae_scale_factor
-        return z
+        return z.to(self.dtype)   # VAE may sit in fp32 (SDXL); the UNet expects bundle dtype
 
     @torch.no_grad()
     def decode_latents(self, latents: torch.Tensor) -> torch.Tensor:
-        """latents [B,4,h,w] -> images in [0,1], [B,3,H,W]."""
+        """latents [B,4,h,w] -> images in [0,1], [B,3,H,W]. Decodes in chunks: the fp32 VAE at
+        1024px needs ~1GB activations per image, so a batch of 10 OOMs a 40GB card."""
         latents = latents.to(self.vae.dtype) / self.vae_scale_factor
-        images = self.vae.decode(latents).sample
+        chunk = 2 if latents.shape[-1] >= 128 else 8
+        outs = []
+        for i in range(0, latents.shape[0], chunk):
+            outs.append(self.vae.decode(latents[i:i + chunk]).sample)
+        images = torch.cat(outs)
         return (images / 2 + 0.5).clamp(0, 1)
 
 
@@ -169,4 +206,41 @@ def load_sd(
         num_train_timesteps=int(noise_scheduler.config.num_train_timesteps),
         vae_scale_factor=float(vae.config.scaling_factor),
         model_id=model_id,
+    )
+
+
+DEFAULT_SDXL = "stabilityai/stable-diffusion-xl-base-1.0"
+
+
+def load_sdxl(
+    model_id: str = DEFAULT_SDXL,
+    device: str | torch.device = "cuda",
+    dtype: str | torch.dtype = torch.bfloat16,
+) -> ModelBundle:
+    """Load + freeze SDXL-base. Same ModelBundle interface; VAE kept in fp32 (the known
+    fp16-artifact issue), UNet/encoders in `dtype` (bf16 default)."""
+    from diffusers import StableDiffusionXLPipeline
+    device = torch.device(device if torch.cuda.is_available() else "cpu")
+    dtype = resolve_dtype(dtype)
+    pipe = StableDiffusionXLPipeline.from_pretrained(model_id, torch_dtype=dtype)
+    unet, vae = pipe.unet, pipe.vae
+    te1, te2 = pipe.text_encoder, pipe.text_encoder_2
+    tok1, tok2 = pipe.tokenizer, pipe.tokenizer_2
+    noise_scheduler = DDPMScheduler.from_config(pipe.scheduler.config)
+    ddim_scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
+    dpm_scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
+    vae = vae.to(dtype=torch.float32)
+    for m in (unet, vae, te1, te2):
+        m.requires_grad_(False); m.eval(); m.to(device)
+    del pipe
+    return ModelBundle(
+        unet=unet, vae=vae, text_encoder=te1, tokenizer=tok1,
+        noise_scheduler=noise_scheduler, ddim_scheduler=ddim_scheduler,
+        dpm_scheduler=dpm_scheduler, device=device, dtype=dtype,
+        cross_attention_dim=int(unet.config.cross_attention_dim),   # 2048
+        clip_hidden_size=int(te2.config.projection_dim),            # 1280 (pooled)
+        num_train_timesteps=int(noise_scheduler.config.num_train_timesteps),
+        vae_scale_factor=float(vae.config.scaling_factor),
+        model_id=model_id,
+        text_encoder_2=te2, tokenizer_2=tok2, is_sdxl=True, default_resolution=1024,
     )
