@@ -324,8 +324,12 @@ def main():
                         al = Fnn.interpolate(al[None], size=(nh, nw), mode="bilinear",
                                              align_corners=False)[0].clamp(0, 1)
                         if alpha_erode > 0:
-                            k = 2 * alpha_erode + 1
-                            al = -Fnn.max_pool2d(-al[None], k, stride=1,
+                            # UWAGA na nazwe: `k` to w tej petli INDEKS TASKA. Uzycie go na
+                            # rozmiar jadra nadpisywalo task numerem 2*erode+1 (job 21744547
+                            # padl na "canonical conditioning for task 7 not set"); gdyby
+                            # kolizja trafila po tasku 7, trening uczylby cicho zlych konceptow.
+                            ksz = 2 * alpha_erode + 1
+                            al = -Fnn.max_pool2d(-al[None], ksz, stride=1,
                                                  padding=alpha_erode)[0]
                         if box is None:      # JEDNA ramka na krok (set_ground jest per krok)
                             x0 = int(torch.randint(0, H - nw + 1, (1,)).item())
