@@ -8,7 +8,9 @@ ACCOUNTS="plgideascvgroup1-gpu-gh200:2027-03-23"
 
 # ML-bundle/24.06a, NIE domyslny 25.04: 25.04 ma 4 kola i nie ma torchvision.
 CLUSTER_MODULES="ML-bundle/24.06a"
-# Interpreter Z MODULU, nie z uv: to ten sam python3.11, pod ktory zbudowano kola.
+
+# Na Heliosie interpreter bierzemy Z MODULU, nie z uv: to ten sam python3.11,
+# pod ktory zbudowano kola aarch64 w $WHEELS.
 VENV_TOOL=venv
 PYTHON=python3.11
 
@@ -33,9 +35,3 @@ GPU_ONLY=1
 # padloby w runtime. Bez pakietu guard zwraca False, a diffusers uzywa
 # AttnProcessor2_0 (natywne SDPA torcha) - porownywalnie szybko.
 SKIP_PACKAGES="xformers"
-
-# requirements.txt pinuje torch==2.7.1 / torchvision==0.22.1, a kol aarch64 dla tych
-# wersji nie ma (max 2.7.0rc9 / 0.21.0). Spojna dostepna para to ponizsza - o wersje
-# minor nizej niz testowane. NUMERYKA DO WERYFIKACJI przed porownywaniem wynikow
-# miedzy klastrami: zejscie wersji jest mniej bezpieczne niz podniesienie.
-PIN_OVERRIDES="torch==2.6.0 torchvision==0.21.0"

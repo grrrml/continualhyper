@@ -5,7 +5,7 @@ PARTITION=plgrid-gpu-a100
 # Konta w kolejnosci preferencji: najpierw grant wygasajacy najszybciej, bo jego
 # godziny przepadaja. Format: konto:data_wygasniecia. Wpisy po dacie sa pomijane
 # automatycznie, wiec lista nie wymaga sprzatania po terminie.
-ACCOUNTS="plgideascvgroup1-gpu-a100:2027-03-23"    # plgroomagine to grant magazynowy tego projektu; obliczenia szly na plgideascv1cl (ZAKONCZONY 2026-08-26)
+ACCOUNTS="plgroomagine-gpu-a100:2026-09-08 plgideascvgroup1-gpu-a100:2027-03-23"
 
 # Athena: drzewo modulow jest niewspierane - nie ma tu 'module load'.
 CLUSTER_MODULES=""

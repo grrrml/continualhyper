@@ -21,7 +21,7 @@ cd "${SLURM_SUBMIT_DIR:-$(dirname "$0")/..}"
 
 echo "=== $(hostname)  arch=$(uname -m)  klaster=$CLUSTER  $(date -u +%FT%TZ)"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader 2>/dev/null || echo "(brak nvidia-smi)"
-echo "=== python: $($PYTHON --version 2>&1), $(command -v $PYTHON)"
+echo "=== VENV_TOOL=${VENV_TOOL:-venv}  PYTHON=$PYTHON"
 echo "=== venv docelowy: $VENV"
 
 if [ -d "$VENV" ] && [ -z "${REBUILD:-}" ]; then
@@ -29,7 +29,20 @@ if [ -d "$VENV" ] && [ -z "${REBUILD:-}" ]; then
 else
   [ -d "$VENV" ] && { echo "=== REBUILD: usuwam $VENV"; rm -rf "$VENV"; }
   mkdir -p "$(dirname "$VENV")"
-  "$PYTHON" -m venv "$VENV"
+  case "${VENV_TOOL:-venv}" in
+    uv)
+      # Athena: w systemie jest tylko python3.9, wiec interpreter dostarcza uv.
+      command -v uv >/dev/null || { echo "brak uv w PATH (~/.local/bin/uv?)"; exit 1; }
+      echo "=== uv $(uv --version | awk '{print $2}'), interpreter $PYTHON z magazynu uv"
+      uv python install "$PYTHON" 2>&1 | tail -2 || true
+      uv venv --python "$PYTHON" --seed "$VENV"
+      ;;
+    venv)
+      echo "=== $($PYTHON --version 2>&1) z modulu"
+      "$PYTHON" -m venv "$VENV"
+      ;;
+    *) echo "nieznany VENV_TOOL=$VENV_TOOL"; exit 1 ;;
+  esac
 fi
 . "$VENV/bin/activate"
 python -m pip install --quiet --upgrade pip setuptools wheel
