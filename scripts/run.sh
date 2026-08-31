@@ -21,6 +21,22 @@ cd "$REPO"
 
 . slurm/env.sh
 
+# --- katalogi danych jako symlinki do $SCRATCH (konwencja z CLAUDE.md).
+#     Musi sie dziac TUTAJ, nie w bootstrap.sbatch: Slurm otwiera plik z
+#     '#SBATCH --output=logs/...' PRZED uruchomieniem skryptu, wiec 'logs' musi
+#     istniec juz przy submisji. Celowo nic nie usuwamy - launcher nie powinien
+#     kasowac; jesli cos stoi na drodze, mowimy o tym i zostawiamy decyzje.
+for d in data results logs outputs wandb; do
+  [ -L "$REPO/$d" ] && continue
+  if [ -e "$REPO/$d" ]; then
+    echo "== UWAGA: $REPO/$d nie jest symlinkiem. Wyniki pojda do \$HOME, nie na \$SCRATCH."
+    echo "          Zeby naprawic: przenies zawartosc do $DATA_ROOT/$d i usun katalog."
+    continue
+  fi
+  mkdir -p "$DATA_ROOT/$d"
+  ln -sfn "$DATA_ROOT/$d" "$REPO/$d"
+done
+
 JOB="${1:?podaj skrypt sbatch, np. jobs/sbatch_foo.sh}"
 shift || true
 [ -f "$JOB" ] || { echo "run.sh: nie ma $JOB" >&2; exit 1; }
