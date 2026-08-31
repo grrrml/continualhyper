@@ -34,7 +34,12 @@ ap.add_argument("--n", type=int, default=2)
 ap.add_argument("--steps", type=int, default=30)
 ap.add_argument("--scale", type=float, default=0.7)
 ap.add_argument("--seed0", type=int, default=31337)
-ap.add_argument("--out", default="assets/figures/ground_compare.jpg")
+# Domyslnie na scratch (results/ jest symlinkiem i jest gitignorowane), NIE do assets/.
+# Job zapisujacy plik do katalogu SLEDZONEGO gitem blokuje pozniej 'git pull --ff-only'
+# w klonie na klastrze, jesli ta sama sciezka zostanie zacommitowana lokalnie - i od tego
+# momentu kazdy run.sh startuje po cichu na starym kodzie. Do repo figura trafia z lokalnej
+# kopii, po scp.
+ap.add_argument("--out", default="results/figures/ground_compare.jpg")
 a = ap.parse_args()
 
 BOXES = {"TL": (0.25, 0.25, 0.5, 0.5), "TR": (0.75, 0.25, 0.5, 0.5),
