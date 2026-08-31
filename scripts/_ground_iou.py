@@ -60,6 +60,9 @@ ap.add_argument("--dino_floor", type=float, default=0.35,
 ap.add_argument("--seg_dir", default="data/seg", help="wycinki referencyjne do koloru")
 ap.add_argument("--prefix", action="store_true",
                 help="promptuj z eval_prefix ('yellow rubber duck toy') zamiast golo")
+ap.add_argument("--seed0", type=int, default=31337,
+                help="baza ziaren generacji; inna wartosc = niezalezna probka tej samej "
+                     "konfiguracji, czyli szum SAMPLINGOWY metryki (nie treningowy)")
 ap.add_argument("--confine_tail", action="store_true",
                 help="kara confine do konca sekwencji (CLIP przyczynowy), nie tylko na spanie")
 ap.add_argument("--out", default="", help="katalog na podglady z ramkami (pusty = nie zapisuj)")
@@ -105,7 +108,7 @@ CATS = _w.meta["categories"]
 print(f"[env] torch {torch.__version__} | {torch.cuda.get_device_name(0)} | "
       f"host {os.uname().nodename} {os.uname().machine}", flush=True)
 print(f"[cfg] ckpt {a.ckpt} | boxes {a.boxes} | n {a.n} | gain_res {GAIN_RES} | "
-      f"prefix {a.prefix} | confine_tail {a.confine_tail} | "
+      f"prefix {a.prefix} | confine_tail {a.confine_tail} | seed0 {a.seed0} | "
       f"Mask R-CNN R50-FPN-v2, prog {a.det_thr}, dino_floor {a.dino_floor}",
       flush=True)
 if a.out:
@@ -232,7 +235,7 @@ for kap, sched, conf in GRID:
         for bname, box in BOXES.items():
             manager.cond_box = box
             for i in range(a.n):
-                g = torch.Generator(device="cuda").manual_seed(31337 + i)
+                g = torch.Generator(device="cuda").manual_seed(a.seed0 + i)
                 img = ddim_sample(bundle, manager, ch, uh, pooled, num_inference_steps=a.steps,
                                   guidance_scale=7.5, generator=g, task_idx=j, token_mask=tm)[0]
                 H, W = img.shape[-2:]
