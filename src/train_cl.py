@@ -270,6 +270,12 @@ def main():
                             drop_last=True, collate_fn=collate_fn,
                             num_workers=int(train.get("num_workers", 2)))
         data_iter = itertools.cycle(loader)
+        # Captiony ida do treningu DOKLADNIE w tej formie. Drukujemy je, bo cichy blad
+        # w podmianie (attr_strip, class_word) nie ma zadnego innego objawu niz atrybut,
+        # ktorego adapter sie nie uczy: kolor kaczki szedl przez prompt, nie przez hipersiec.
+        _ds = loader.dataset
+        _caps = sorted({_ds._caption(os.path.splitext(os.path.basename(q))[0]) for q in _ds.paths})
+        print(f"[CL] captiony {spec.concept_id}: " + " | ".join(_caps), flush=True)
 
         # von-Oswald: snapshot the hypernet output on OLD concepts at the START of this task (Theta*)
         targets, anchors = None, None
