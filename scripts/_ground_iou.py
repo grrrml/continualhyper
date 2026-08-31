@@ -43,7 +43,7 @@ from src.injection import DEFAULT_TARGETS
 from src.sampling import ddim_sample
 from src.tokens import token_span_mask
 from src.regional import set_grounded, set_regional_self
-from src.cifc_metrics import _Dino
+from src.cifc_metrics import _Dino, _Clip
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--config", default="configs/phaseP/P_ground_gsa.yaml")
@@ -58,6 +58,11 @@ ap.add_argument("--det_thr", type=float, default=0.3)
 ap.add_argument("--dino_floor", type=float, default=0.35,
                 help="ponizej tego podobienstwa kandydat nie jest uznawany za obiekt")
 ap.add_argument("--seg_dir", default="data/seg", help="wycinki referencyjne do koloru")
+ap.add_argument("--scene", default="",
+                help="doklej opis scenerii do promptu, np. 'on a beach'. TA na golym prompcie "
+                     "nie mierzy niczego istotnego: kara tail idzie OD tokenu konceptu DO KONCA "
+                     "sekwencji, a slowa scenerii stoja po koncepcie, wiec poza ramka tlumimy "
+                     "nie tylko podmiot, ale i scene")
 ap.add_argument("--prefix", action="store_true",
                 help="promptuj z eval_prefix ('yellow rubber duck toy') zamiast golo")
 ap.add_argument("--bootstrap", type=int, default=0,
@@ -112,6 +117,7 @@ manager.ground_gain_res = GAIN_RES
 manager.ground_confine_tail = a.confine_tail
 set_grounded(bundle.unet, manager)
 dino = _Dino("cuda")
+clip = _Clip("cuda")
 
 from torchvision.models.detection import (maskrcnn_resnet50_fpn_v2,
                                           MaskRCNN_ResNet50_FPN_V2_Weights)
@@ -121,7 +127,8 @@ CATS = _w.meta["categories"]
 
 print(f"[env] torch {torch.__version__} | {torch.cuda.get_device_name(0)} | "
       f"host {os.uname().nodename} {os.uname().machine}", flush=True)
-print(f"[cfg] ckpt {a.ckpt} | boxes {a.boxes} | n {a.n} | gain_res {GAIN_RES} | "
+print(f"[cfg] ckpt {a.ckpt} | boxes {a.boxes} | n {a.n} | scena '{a.scene}' | "
+      f"gain_res {GAIN_RES} | "
       f"self_leak {a.self_leak} | "
       f"prefix {a.prefix} | confine_tail {a.confine_tail} | seed0 {a.seed0} | "
       f"Mask R-CNN R50-FPN-v2, prog {a.det_thr}, dino_floor {a.dino_floor}",
@@ -273,7 +280,7 @@ def crops(img, mode):
 
 
 KEYS = ("iou", "hit", "con", "fill", "q", "n", "ndet", "dino", "dcol", "ncol",
-        "bgg", "bgs", "nbg", "bgsim", "nbgsim", "dcrop", "dmaskd", "ncrop")
+        "bgg", "bgs", "nbg", "bgsim", "nbgsim", "dcrop", "dmaskd", "ncrop", "ta")
 for kap, sched, conf in GRID:
     manager.ground_gain_base = kap
     manager.ground_sched_frac = sched
@@ -287,7 +294,10 @@ for kap, sched, conf in GRID:
         rcol = ref_color(c["concept_id"])
         cls = c["class_word"]
         pref = (c.get("eval_prefix", "").strip() + " ") if a.prefix else ""
-        prompt = "a photo of " + pref + cls
+        prompt = "a photo of " + pref + cls + ((" " + a.scene.strip()) if a.scene else "")
+        # TA liczona wzgledem CALEGO promptu (ze scena): to ona placi za mechanizmy, ktore
+        # odbieraja zewnetrzu ramki dostep do tekstu.
+        txt = clip.txt_feats([prompt])          # juz znormalizowane
         ch, pooled, _ = bundle.encode_text([prompt])
         uh, _, _ = bundle.encode_text([""])
         tm = token_span_mask(bundle.tokenizer, [prompt], cls).cuda() if cfg.get("token_mask_lora") else None
@@ -314,6 +324,9 @@ for kap, sched, conf in GRID:
                         for k, v in crops(img, a.boxes).items()}
                 st["q"] += int(max(sims, key=sims.get) == bname)
                 st["dino"] += float((dino_feat(pil) @ ref.t()).item())
+                # TA jak w cifc_metrics._clip_t: 2.5 * max(0, cos(obraz, tekst))
+                fi = clip.img_feats_from_tensor(img.unsqueeze(0).float())
+                st["ta"] += float((2.5 * (fi * txt).sum(-1).clamp(min=0)).mean().item())
                 st["n"] += 1
                 req = to_xyxy(box, W, H)
                 dbox, dmask, path = detect(img, pil, HINT.get(c["concept_id"]), ref)
@@ -379,6 +392,7 @@ for kap, sched, conf in GRID:
                         dr.rectangle(dbox, outline=(0, 255, 0), width=3)
                     pil.save(os.path.join(a.out, c["concept_id"] + f"_k{kap}_s{sched}_c{conf}_{bname}.png"))
         n, nd = max(1.0, st["n"]), max(1.0, st["ndet"])
+        print(f"  {'':<16} TA {st['ta']/n:.4f} | prompt: '{prompt}'", flush=True)
         print(f"  {c['concept_id']:<16} cwiartki {int(st['q'])}/{int(st['n'])} = {st['q']/n:.0%} | "
               f"IoU {st['iou']/nd:.3f} | IoU>0.5 {st['hit']/nd:.0%} | zawarcie {st['con']/nd:.2f} | "
               f"wypelnienie {st['fill']/nd:.2f} | DINO {st['dino']/n:.4f} | "
@@ -403,7 +417,7 @@ for kap, sched, conf in GRID:
     n, nd = max(1.0, agg["n"]), max(1.0, agg["ndet"])
     print(f"  RAZEM            cwiartki {int(agg['q'])}/{int(agg['n'])} = {agg['q']/n:.0%} | "
           f"IoU {agg['iou']/nd:.3f} | IoU>0.5 {agg['hit']/nd:.0%} | zawarcie {agg['con']/nd:.2f} | "
-          f"wypelnienie {agg['fill']/nd:.2f} | DINO {agg['dino']/n:.4f} | "
+          f"wypelnienie {agg['fill']/nd:.2f} | TA {agg['ta']/n:.4f} | DINO {agg['dino']/n:.4f} | "
           f"DINOwyc {agg['dcrop']/max(1.0, agg['ncrop']):.4f} | "
           f"DINOmask {agg['dmaskd']/max(1.0, agg['ncrop']):.4f} | "
           f"kolor dRGB {agg['dcol']/max(1.0, agg['ncol']):.3f} | "
