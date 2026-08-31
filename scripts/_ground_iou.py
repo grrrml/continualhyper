@@ -272,7 +272,7 @@ def crops(img, mode):
 
 
 KEYS = ("iou", "hit", "con", "fill", "q", "n", "ndet", "dino", "dcol", "ncol",
-        "bgg", "bgs", "nbg", "bgsim", "nbgsim")
+        "bgg", "bgs", "nbg", "bgsim", "nbgsim", "dcrop", "dmaskd", "ncrop")
 for kap, sched, conf in GRID:
     manager.ground_gain_base = kap
     manager.ground_sched_frac = sched
@@ -352,6 +352,20 @@ for kap, sched, conf in GRID:
                     f2 = dino_feat(to_pil(mask_out(ref_img, both)))
                     st["bgsim"] += float((f1 @ f2.t()).item())
                     st["nbgsim"] += 1
+                if dbox is not None:
+                    # DINO NA WYCINKU i na pikselach maski. Pelnokadrowe DINO wobec referencji
+                    # (a te sa zblizeniami) NAGRADZA wypelnianie kadru, czyli dokladnie lamanie
+                    # warunku "obiekt w ramce": obiekt poprawnie wcisniety do cwiartki jest
+                    # renderowany w polowie rozdzielczosci liniowej i z definicji dostaje mniej.
+                    # Bez tej pary liczb kazda poprawa zawierania wyglada jak utrata tozsamosci.
+                    x0, y0, x1, y1 = [int(v) for v in dbox]
+                    if x1 - x0 > 8 and y1 - y0 > 8:
+                        st["dcrop"] += float((dino_feat(pil.crop((x0, y0, x1, y1))) @ ref.t()).item())
+                        obj = img.clone()
+                        obj[:, ~dmask] = 0.5
+                        st["dmaskd"] += float((dino_feat(to_pil(obj).crop((x0, y0, x1, y1)))
+                                               @ ref.t()).item())
+                        st["ncrop"] += 1
                 bs = bg_stats(img, dmask)
                 if bs is not None:
                     st["bgg"] += bs[0]
@@ -369,6 +383,9 @@ for kap, sched, conf in GRID:
               f"wypelnienie {st['fill']/nd:.2f} | DINO {st['dino']/n:.4f} | "
               f"det {int(st['ndet'])}/{int(st['n'])} {paths}", flush=True)
         nbg = max(1.0, st["nbg"])
+        ncr = max(1.0, st["ncrop"])
+        print(f"  {'':<16} DINO wycinek {st['dcrop']/ncr:.4f} | DINO maska {st['dmaskd']/ncr:.4f}",
+              flush=True)
         extra = (f" | tlo sim {st['bgsim']/max(1.0, st['nbgsim']):.4f}" if st["nbgsim"] else "")
         print(f"  {'':<16} tlo grad {st['bgg']/nbg:.4f} | tlo std {st['bgs']/nbg:.4f}{extra}",
               flush=True)
@@ -386,6 +403,8 @@ for kap, sched, conf in GRID:
     print(f"  RAZEM            cwiartki {int(agg['q'])}/{int(agg['n'])} = {agg['q']/n:.0%} | "
           f"IoU {agg['iou']/nd:.3f} | IoU>0.5 {agg['hit']/nd:.0%} | zawarcie {agg['con']/nd:.2f} | "
           f"wypelnienie {agg['fill']/nd:.2f} | DINO {agg['dino']/n:.4f} | "
+          f"DINOwyc {agg['dcrop']/max(1.0, agg['ncrop']):.4f} | "
+          f"DINOmask {agg['dmaskd']/max(1.0, agg['ncrop']):.4f} | "
           f"kolor dRGB {agg['dcol']/max(1.0, agg['ncol']):.3f} | "
           f"tlo grad {agg['bgg']/max(1.0, agg['nbg']):.4f} | "
           f"tlo std {agg['bgs']/max(1.0, agg['nbg']):.4f} | "
