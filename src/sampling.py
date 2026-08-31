@@ -86,18 +86,21 @@ def ddim_sample(
     bs_mask = None
     if bootstrap_steps > 0 and getattr(manager, "cond_box", None) is not None:
         cx, cy, bw, bh = manager.cond_box
-        # Maska z MIEKKA krawedzia. Twarda podmiana latentu zostawia szew: obiekt bywa uciety
-        # dokladnie na granicy ramki (widoczne na cat2/dog2), a metryki to NAGRADZAJA, bo uciety
-        # obiekt lezy w calosci w ramce i zawarcie rosnie. Rozmycie o `bs_feather` komorek daje
-        # trajektorii pas, w ktorym moze zszyc obie strony.
-        ys = torch.arange(lh, device=device, dtype=torch.float32).view(-1, 1)
-        xs = torch.arange(lw, device=device, dtype=torch.float32).view(1, -1)
-        fe = float(getattr(manager, "bs_feather", 2.0))
-        t_y0, t_y1 = (cy - bh / 2) * lh, (cy + bh / 2) * lh
-        t_x0, t_x1 = (cx - bw / 2) * lw, (cx + bw / 2) * lw
-        m_y = torch.sigmoid((ys - t_y0) / fe) * torch.sigmoid((t_y1 - ys) / fe)
-        m_x = torch.sigmoid((xs - t_x0) / fe) * torch.sigmoid((t_x1 - xs) / fe)
-        bs_mask = (m_y * m_x).clamp(0, 1)[None, None].to(dtype)
+        # Maska TWARDA, ale ramka ROZSZERZONA o `bs_dilate` komorek latentu.
+        # Dlaczego nie miekka krawedz (sprawdzone i odrzucone 2026-08-31): mieszanka
+        # `latents*m + bg_t*(1-m)` sklada DWA NIEZALEZNE losowania szumu, wiec jej wariancja
+        # to m^2+(1-m)^2 - przy m=0.5 polowa tego, co powinno byc na danym poziomie szumu.
+        # Denoiser widzi wejscie "za malo zaszumione" i zwraca obraz o zdlawionym kontraescie:
+        # tla wychodzily SZARE, a detektor przestawal znajdowac podmiot (cat: DINO 0.299,
+        # brak detekcji w 7/12). Twarda maska zachowuje wariancje; rozszerzenie ramki daje
+        # obiektowi margines, w ktorym moze dokonczyc nogi i glowe, zamiast zostac uciety.
+        d = int(getattr(manager, "bs_dilate", 3))
+        y0 = max(0, int((cy - bh / 2) * lh) - d)
+        y1 = min(lh, max(y0 + 1, int(round((cy + bh / 2) * lh)) + d))
+        x0 = max(0, int((cx - bw / 2) * lw) - d)
+        x1 = min(lw, max(x0 + 1, int(round((cx + bw / 2) * lw)) + d))
+        bs_mask = torch.zeros(1, 1, lh, lw, device=device, dtype=dtype)
+        bs_mask[:, :, y0:y1, x0:x1] = 1.0
         if bootstrap_bg is not None:
             bootstrap_bg = bootstrap_bg.to(device=device, dtype=dtype)
 
