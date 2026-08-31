@@ -425,7 +425,8 @@ Kandydat na poprawkę: `logit_i = ⟨q_i,K·e⟩ + ⟨P·fourier(pos_i), R·four
 z geometrii (dokładne, darmowe), treść nadal z hipersieci. To NIE jest powrót do obalonego
 training-free maskowania (tam: ograniczanie istniejącej tożsamości bez treningu; tu: trenowany
 content-injection z dokładnym adresem). Do decyzji użytkownika, razem z ew. karą za koncept
-poza ramką w stracie. Drugi trop (ReGround, ECCV 2024, 03388): nasza topologia RÓWNOLEGŁA
+poza ramką w stracie. Drugi trop (ReGround, ECCV 2024, **arXiv 2403.13589** — sprostowane 2026-08-31, wcześniej
+błędnie „03388”; tytuł: *ReGround: Improving Textual and Spatial Grounding at No Cost*, Lee & Sung): nasza topologia RÓWNOLEGŁA
 jest zgodna z ich wnioskiem (szeregowa GSA GLIGEN-a tłumi tekst); plan awaryjny = gotowe
 wagi GSA GLIGEN-a (placement wytrenowany na dużych danych) + hipernet podaje treść tokenu;
 ostrzeżenie: podbijanie amplitudy groundingu ma znany tryb awarii (zjada TA jak GLIGEN γ=1).
