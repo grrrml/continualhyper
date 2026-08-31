@@ -317,13 +317,16 @@ for kap, sched, conf in GRID:
                 return scaffold[i_seed]
             bgp = " ".join((prompt.replace(cls, " ")).split())
             chb, pooledb, _ = bundle.encode_text([bgp])
-            keep = (manager.lora_scale, manager.cond_box)
-            manager.lora_scale, manager.cond_box = 0.0, None
+            # task_idx MUSI byc podany: przy None heady dostaja surowy pooled 768, a oczekuja
+            # 128-wymiarowego klucza taska (mat1 1x768 vs mat2 128x50). Wklad hipersieci i
+            # groundingu zerujemy SKALA, nie brakiem indeksu.
+            keep = (manager.lora_scale, manager.cond_box, manager.ground_gain_base)
+            manager.lora_scale, manager.cond_box, manager.ground_gain_base = 0.0, None, 0.0
             gb = torch.Generator(device="cuda").manual_seed(a.seed0 + i_seed)
             scaf = ddim_sample(bundle, manager, chb, uh, pooledb,
                                num_inference_steps=a.scaffold_steps, guidance_scale=7.5,
-                               generator=gb, task_idx=None, token_mask=None)[0]
-            manager.lora_scale, manager.cond_box = keep
+                               generator=gb, task_idx=j, token_mask=None)[0]
+            manager.lora_scale, manager.cond_box, manager.ground_gain_base = keep
             scaffold[i_seed] = bundle.encode_images(scaf.unsqueeze(0) * 2 - 1)
             if i_seed == 0:
                 print(f"  {'':<16} rusztowanie z promptu: '{bgp}' ({a.scaffold_steps} krokow)",
