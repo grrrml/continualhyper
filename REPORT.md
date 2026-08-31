@@ -174,6 +174,23 @@ z 2026-08-20 (n=3, ziarna 31337):
 | **nocap + tail3** | 75% | 0.77 | **1.35** | 0.7076 | **0.161** | 0.0993 | 0.1307 |
 | nocap + κ=2/s=0.3 + tail3 | 56% | 0.70 | 1.57 | 0.7268 | 0.128 | — | — |
 
+**ROZSTRZYGNIĘCIE PARAMI (n=6, 168 generacji na wiersz, ziarna 41337, κ=4/s=0.15 + tail3):**
+
+| | IoU>0.5 | zawarcie | wypełnienie | DINO | dRGB | tło std |
+|---|---|---|---|---|---|---|
+| base + tail3 | 68% | 0.73 | 1.60 | 0.6960 | 0.197 | 0.1305 |
+| **nocap + tail3** | 66% | 0.73 | **1.35** | **0.7109** | **0.162** | **0.1399** |
+
+Placement **równy** (2 pp = szum), a nocap wygrywa na wszystkich pozostałych osiach.
+Wcześniejsze „base+tail ma lepszy placement (79% vs 75%)" było artefaktem pojedynczego
+pomiaru n=3 — po przejściu na parę n=6 przewaga znika. Wypełnienie 1.35 powtórzyło się
+w **trzech** niezależnych pomiarach tej konfiguracji (n=3 ziarna 31337; n=6 ziarna 31337;
+n=6 ziarna 41337), a IoU>0.5 wahało się 66–75% — zawieranie, tożsamość i kolor są
+powtarzalne, sam IoU>0.5 ma grube słupki. Zgadza się to z siatką: w kolumnie base+tail
+są duplikacje podmiotu i płaskie tła, których żadna liczba nie karze.
+
+**PUNKT PRACY: `P_ground_gsa_nocap` + κ=4, sched 0.15, tail-confine 3.**
+
 **Kontrola bez ramki** (κ=1, pełny kadr = protokół bazowy, 42 generacje): base DINO 0.7744,
 dRGB 0.171, tło grad 0.0702, tło std 0.1763 · nocap DINO 0.7898, dRGB **0.103**, tło grad
 0.0724, tło std **0.1836**. Czyli **`attr_strip` poprawia protokół BAZOWY, nie tylko wersję
@@ -212,6 +229,20 @@ groundingu, i to ona uzasadnia uczynienie nocap wersją główną.
 - **κ-aware trening jako kalibracja punktu pracy:** uczy się iloczyn `gain·tanh(gate)`, więc
   stałe κ w treningu to reparametryzacja. Sens ma tylko κ **losowane**, jako regularyzacja
   odporności na skalę — i nie podniesie szczytowego placementu.
+
+**(g) Pułapka infrastrukturalna, kosztowała trzy padłe zadania.** Job zapisał figurę do katalogu
+**śledzonego gitem** na klastrze (`assets/figures/`), a ta sama ścieżka została zacommitowana
+lokalnie — `git pull --ff-only` odmawia nadpisania pliku nieśledzonego, więc klon został 5
+commitów z tyłu i **każdy `run.sh` startował po cichu na starym kodzie** (jedna linijka
+ostrzeżenia ginęła w wyjściu; padły dopiero Python i brak configu). Naprawione trzema zmianami:
+(1) `_ground_compare.py` pisze na scratch, nie do `assets/`; (2) `run.sh` **przerywa** przy
+nieudanym pullu, świadome uruchomienie to `SKIP_PULL=1`; (3) flaga `(DIRTY)` wyklucza
+`wandb`/`outputs`, bo to symlinki, które ten sam launcher tworzy — dotąd była włączona ZAWSZE
+i przestała cokolwiek znaczyć. Efekt uboczny do zapamiętania: pull podmienia `run.sh` **w trakcie
+jego własnego wykonania**, a bash czyta skrypt przyrostowo — pierwsza submisja po naprawie użyła
+jeszcze starej logiki i wpisała mylące `(DIRTY)` do `run-info.txt` joba 21620332. Commit
+w proweniencji pozostaje prawdziwy (brany po pullu), ale podmiana w locie może zrobić więcej
+szkody niż mylna flaga.
 
 ## 5. Pozostałe wyniki analityczne (do artykułu)
 
