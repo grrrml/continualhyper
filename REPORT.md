@@ -326,6 +326,41 @@ Zawarcie 0.90–0.94, ćwiartki 99–100%, TA 0.818–0.828, DINO na wycinku 0.6
 nie wypełnia) — dlatego IoU>0.5 zostaje na 73–76% mimo zawarcia 0.9+; K=10 daje wypełnienie
 0.87 i jest lepszym kompromisem niż K=20.
 
+### Bootstrap: trzy maski, trzy skazy, jeden korzeń (2026-08-31, noc)
+
+Konfiguracja `P_ground_gsa_nocap_all` + κ=2/s=0.3, bootstrap 10 z rusztowaniem z promptu,
+prompt „on a beach", 84 generacje. Skazy widoczne TYLKO na siatkach — wskazane przez
+użytkownika, nie przez metryki:
+
+| maska | IoU>0.5 | zawarcie | wypełn. | TA | DINOwyc | kolor | det | skaza wizualna |
+|---|---|---|---|---|---|---|---|---|
+| twarda | 60% | 0.82 | 0.87 | 0.8115 | 0.7008 | 0.135 | 84/84 | **amputacje**: miś bez nóg |
+| miękka (feather 2) | 34% | 0.75 | 0.69 | 0.7722 | 0.6508 | 0.171 | **74/84** | **szare, wyprane obrazy** |
+| twarda + dylatacja 3 | 57–58% | 0.74–0.76 | **1.05–1.07** | 0.8124 | 0.704–0.714 | 0.122–0.127 | 84/84 | prostokątny szew, przycięcie kadrem |
+
+**Miękka maska — ODRZUCONA z mechanizmem.** Mieszanka `latents*m + bg_t*(1-m)` składa DWA
+niezależne losowania szumu, więc wariancja to `m²+(1-m)²` — przy m=0.5 połowa właściwej.
+Denoiser dostaje wejście „za mało zaszumione" i zwraca obraz o zdławionym kontraście: tła
+wychodzą szare, a detektor nie znajduje podmiotu w 10 z 84 obrazów. Nie da się tego naprawić
+szerokością rozmycia; binarność maski jest warunkiem poprawnej statystyki szumu.
+
+**Dylatacja naprawia amputację i kolor, ale nie skalę.** Kot w ramce TR ma nadal uciętą głowę
+**krawędzią OBRAZKA**: ramka sięga górnej krawędzi kadru, więc gdy model wygeneruje obiekt za
+duży, jego górna część musiałaby leżeć poza kadrem — tam nie ma „zewnętrza", którym maska
+mogłaby zarządzić. To porażka SKALI, nie maski: żaden z badanych mechanizmów nie mówi modelowi
+„zrób obiekt mniejszy".
+
+**Wniosek strukturalny:** bootstrap daje zawieranie **przez rzeźbienie w kadrze**, a artefakty
+rzeźbienia (amputacja, przycięcie, szew) są jego podpisem, nie kwestią strojenia — i metryki je
+NAGRADZAJĄ, bo zawarcie rośnie, gdy wystające fragmenty znikają. Dalsze warianty maski to
+polerowanie wady wpisanej w konstrukcję. Właściwy kierunek: **ITP/RTP** (własny kontekst
+tekstowy per region, protokół CIDM, `RegionKVAttnProcessor` w repo) — zmienia to, o co model
+jest proszony, zamiast wycinać to, co wygenerował — plus brakująca przesłanka o skali.
+
+Figury: `assets/figures/grid_nocapall_k2_boot10_TLTR.jpg` (twarda, tylko TL/TR — usterka
+szerokości arkusza, naprawiona), `grid_nocapall_soft.jpg` (miękka, szare tła),
+`grid_nocapall_dil.jpg` (dylatacja, 4 kolumny).
+
 ### SUFIT BENCHMARKU: per-koncept DINO jest ograniczone spójnością referencji (2026-08-31)
 
 `scripts/_ref_selfsim.py` (job 21684620). `self_par` = średnie podobieństwo DINO **par zdjęć
