@@ -44,12 +44,25 @@ shift || true
 # --- kod idzie tylko przez gita
 if [ -z "${SKIP_PULL:-}" ]; then
   echo "== git pull"
-  git pull --quiet --ff-only || echo "   (pull nieudany - lece dalej na tym, co jest)"
+  # PRZERYWAMY, gdy pull sie nie uda. Wczesniej bylo '|| echo ostrzezenie' i to sie zemscilo:
+  # job zapisal plik do katalogu SLEDZONEGO gitem (assets/figures/), ta sama sciezka zostala
+  # zacommitowana lokalnie, '--ff-only' odmowil nadpisania pliku niesledzonego i klon zostal
+  # 5 commitow z tylu. Kazde kolejne zadanie startowalo po cichu na STARYM kodzie - jedna
+  # linijka ostrzezenia gina w kilkunastu liniach wyjscia. Swiadome uruchomienie na tym,
+  # co jest: SKIP_PULL=1.
+  if ! git pull --ff-only; then
+    echo "== PULL NIEUDANY. Zadanie NIE zostalo wyslane, bo poszloby na starym kodzie." >&2
+    echo "   Napraw przyczyne (czesto: niesledzony plik na drodze merge'a, patrz wyzej)" >&2
+    echo "   albo uruchom swiadomie na obecnym stanie: SKIP_PULL=1 bash scripts/run.sh ..." >&2
+    exit 1
+  fi
 fi
 
 COMMIT=$(git rev-parse --short HEAD)
 DIRTY=""
-if [ -n "$(git status --porcelain -- ':!results' ':!logs' ':!data' 2>/dev/null)" ]; then
+# Wykluczamy takze wandb/outputs: to symlinki, ktore ten launcher sam tworzy kilka linii
+# wyzej, wiec bez tego KAZDY run byl znakowany (DIRTY) i flaga przestala cokolwiek znaczyc.
+if [ -n "$(git status --porcelain -- ':!results' ':!logs' ':!data' ':!wandb' ':!outputs' 2>/dev/null)" ]; then
   DIRTY=" (DIRTY)"
   echo "== UWAGA: niezacommitowane zmiany w kodzie. Wynik nie bedzie odtwarzalny z commita."
 fi
@@ -110,7 +123,7 @@ mkdir -p "$INFO_DIR"
   echo "DATA_ROOT  : $DATA_ROOT"
   echo
   echo "--- git status (kod, bez results/logs/data)"
-  git status --porcelain -- ':!results' ':!logs' ':!data' 2>/dev/null || true
+  git status --porcelain -- ':!results' ':!logs' ':!data' ':!wandb' ':!outputs' 2>/dev/null || true
   echo
   echo "--- pip freeze"
   # Nie uruchamiamy tu pipa: na Heliosie venv jest aarch64, a run.sh chodzi na
