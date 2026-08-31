@@ -67,6 +67,11 @@ ap.add_argument("--prefix", action="store_true",
                 help="promptuj z eval_prefix ('yellow rubber duck toy') zamiast golo")
 ap.add_argument("--bootstrap", type=int, default=0,
                 help="liczba pierwszych krokow, w ktorych ZEWNETRZE ramki jest zaszumionym tlem")
+ap.add_argument("--scaffold_steps", type=int, default=0,
+                help="RUSZTOWANIE Z PROMPTU: wygeneruj tlo w tym samym wywolaniu, promptem "
+                     "uzytkownika z WYCIETYM konceptem, tyloma krokami. Zero plikow na wejsciu, "
+                     "a scena zgadza sie z promptem - w przeciwienstwie do banku tel, gdzie "
+                     "prompt mowil 'plaza', a rusztowanie dawalo zaulek (TA 0.807 -> 0.749)")
 ap.add_argument("--bg_dir", default="",
                 help="ABLACJA: zewnetrzne tla do bootstrapu. Pusty (domyslnie) = tryb docelowy, "
                      "czyli zewnetrze odszumiane bezwarunkowo - bez zadnych danych na wejsciu")
@@ -303,6 +308,27 @@ for kap, sched, conf in GRID:
         tm = token_span_mask(bundle.tokenizer, [prompt], cls).cuda() if cfg.get("token_mask_lora") else None
         st = dict.fromkeys(KEYS, 0.0)
         paths, gcol_sum, gcol_n = {}, np.zeros(3), 0
+        scaffold = {}                      # (ziarno) -> latent tla; nie zalezy od ramki
+
+        @torch.no_grad()
+        def scaffold_latent(i_seed):
+            """Tlo z PROMPTU: ten sam prompt z wycietym konceptem, bez LoRA i bez groundingu."""
+            if i_seed in scaffold:
+                return scaffold[i_seed]
+            bgp = " ".join((prompt.replace(cls, " ")).split())
+            chb, pooledb, _ = bundle.encode_text([bgp])
+            keep = (manager.lora_scale, manager.cond_box)
+            manager.lora_scale, manager.cond_box = 0.0, None
+            gb = torch.Generator(device="cuda").manual_seed(a.seed0 + i_seed)
+            scaf = ddim_sample(bundle, manager, chb, uh, pooledb,
+                               num_inference_steps=a.scaffold_steps, guidance_scale=7.5,
+                               generator=gb, task_idx=None, token_mask=None)[0]
+            manager.lora_scale, manager.cond_box = keep
+            scaffold[i_seed] = bundle.encode_images(scaf.unsqueeze(0) * 2 - 1)
+            if i_seed == 0:
+                print(f"  {'':<16} rusztowanie z promptu: '{bgp}' ({a.scaffold_steps} krokow)",
+                      flush=True)
+            return scaffold[i_seed]
         for bname, box in BOXES.items():
             manager.cond_box = box
             if a.self_leak >= 0:
@@ -317,7 +343,9 @@ for kap, sched, conf in GRID:
                 img = ddim_sample(bundle, manager, ch, uh, pooled, num_inference_steps=a.steps,
                                   guidance_scale=7.5, generator=g, task_idx=j, token_mask=tm,
                                   bootstrap_steps=a.bootstrap,
-                                  bootstrap_bg=bg_latent(j * 97 + i) if a.bootstrap else None)[0]
+                                  bootstrap_bg=(scaffold_latent(i) if a.scaffold_steps
+                                                else (bg_latent(j * 97 + i) if a.bootstrap
+                                                      else None)))[0]
                 H, W = img.shape[-2:]
                 pil = to_pil(img)
                 sims = {k: float((dino_feat(to_pil(v)) @ ref.t()).item())
