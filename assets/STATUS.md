@@ -430,6 +430,69 @@ jest zgodna z ich wnioskiem (szeregowa GSA GLIGEN-a tłumi tekst); plan awaryjny
 wagi GSA GLIGEN-a (placement wytrenowany na dużych danych) + hipernet podaje treść tokenu;
 ostrzeżenie: podbijanie amplitudy groundingu ma znany tryb awarii (zjada TA jak GLIGEN γ=1).
 
+## 1l. POLEROWANIE GSA NA HELIOSIE (2026-08-31) — pełne liczby
+
+Wszystko na `outputs/phaseP/P_ground_gsa/hyper.pt`, ziarna 31337+i, 30 kroków, `lora_scale`
+0.7, ćwiartki (ramka = 25% kadru), 84 generacje na punkt. Instrument: `scripts/_ground_iou.py`
+(Mask R-CNN R50-FPN-v2 COCO; wybór detekcji przez podobieństwo DINO do referencji, nie przez
+score, bo dla kaczki COCO strzela `dining table`/`vase`).
+
+### Numeryka Heliosa wobec Ateny — ZGODNA
+| pomiar | Athena | Helios | job |
+|---|---|---|---|
+| ćwiartki @κ=2/s=0.3 per koncept | 42/83/83/75/42/58/58 | **identyczne** | 21594432 vs 3043021 |
+| DINO per koncept @κ=2/s=0.3 | 0.8417…0.4607 | Δ ≤ 0.0015 | jw. |
+| sonda połówkowa κ=1 | 71/84 = 84.5% | 73/84 = 86.9% | 21590216 |
+| sonda połówkowa κ=2 | 79/84 = 94.0% | 77/84 = 91.7% | 21590217 |
+Rozjazd w sondzie połówkowej siedzi prawie cały na kaczce (κ=2: 11/12 vs 8/12) — koncept
+o najniższym DINO wobec referencji, więc argmax po połówkach jest tam najchybotliwszy.
+GH200 ~3× szybszy od A100 na tym kodzie (84 generacje @30 kroków: 5 min wall).
+
+### Punkty pracy i gałki (RAZEM po 7 konceptach)
+| konfiguracja | ćwiartki | IoU | IoU>0.5 | zawarcie | wypełn. | DINO | kolor dRGB | det | job |
+|---|---|---|---|---|---|---|---|---|---|
+| κ=2, s=0.3 | 63% | 0.375 | 23% | 0.49 | 2.19 | 0.7270 | **0.137** | 84/84 | 21598893 |
+| κ=4, s=0.15 | 79% | 0.541 | **62%** | 0.67 | 1.60 | 0.7001 | 0.180 | 84/84 | 21597878 |
+| κ=4, s=0.15, `gain_res 64:0` | 74% | 0.495 | 46% | 0.61 | 1.89 | 0.6969 | 0.173 | 84/84 | 21597884 |
+| κ=4, s=0.15, confine 3 (span) | 80% | 0.548 | 64% | 0.69 | 1.58 | 0.6967 | 0.178 | 84/84 | 21597878 |
+| κ=4, s=0.15, confine 6 (span) | 81% | 0.549 | 64% | 0.69 | 1.64 | 0.6964 | 0.173 | 83/84 | 21597878 |
+
+**Per koncept @κ=2/s=0.3** (stary detektor Faster R-CNN, job 21594432 — dlatego nie miesza się
+z tabelą wyżej): dog 0.273/0%/0.31/2.38 · duck 0.482/33%/0.58/1.89 · cat 0.427/33%/0.48/2.13 ·
+backpack 0.349/25%/0.46/1.63 · teddy 0.289/8%/0.31/2.52 · dog2 0.403/25%/0.43/2.28 ·
+cat2 0.400/17%/0.41/2.45 (IoU / IoU>0.5 / zawarcie / wypełnienie).
+
+### Werdykty
+1. **Metryka ćwiartek zawyża placement.** Mierzy argmax podobieństwa po ćwiartkach, czyli GDZIE
+   koncept jest najwyrazistszy, a nie czy MIESCI SIE w ramce. @κ=2 kaczka: 83% ćwiartek vs 33%
+   IoU>0.5. Do artykułu obie liczby z nazwanym rozróżnieniem.
+2. **Harmonogram + κ robią dla zawierania więcej, niż widziała stara metryka**: (κ=2,s=0.3) →
+   (κ=4,s=0.15) to IoU>0.5 23% → 62% i wypełnienie 2.19 → 1.60, za −0.027 DINO i +0.043 dRGB.
+3. **`gain_res` (κ per rozdzielczość) — ODRZUCONE.** Wyłączenie wstrzyku na mapach 64² zabiera
+   16 punktów IoU>0.5, a kolor poprawia o 0.007 (w szumie). Najdrobniejsze warstwy attn2
+   współpracują w układzie, a dryf koloru nie pochodzi ze wstrzyku.
+4. **`confine` na spanie konceptu — NO-OP.** Kara 0→3→6 daje IoU>0.5 62→64→64% (dwie próbki
+   z 84), wypełnienie bez zmian. Zgodne z przyczynowością CLIP-a (audit 2885915): kara na
+   pozycjach `dog` zostawia EOS i padding niosące całe zdanie. Test wyjaśnienia: wariant
+   `cummax` (kara od pierwszego tokenu konceptu do końca sekwencji), job 21602457.
+5. **Prior skali z referencji** (hipoteza, kontrola w skrypcie): porządek wypełnienia idzie po
+   sposobie fotografowania konceptu — zbliżenia zwierząt i maskotek 2.1–2.5, obiekty w scenie
+   duck 1.89 i backpack 1.63. Przy `box_aug_p 0.5` połowa kroków treningu to gołe zbliżenia bez
+   ramki, które uczą „ten koncept wypełnia kadr". Dźwignia: `box_aug_p` 0.8, sam config.
+6. **κ-aware trening nie ma sensu jako kalibracja punktu pracy**: uczy się iloczyn
+   `gain·tanh(gate)`, więc stałe κ w treningu to reparametryzacja. Sens ma tylko κ **losowane**,
+   jako regularyzacja odporności na skalę.
+
+### Przeciek atrybutu w captionach treningowych — potwierdzony
+Captiony CIFC: `yellow rubber duck toy sitting on a gravel surface` (4/4),
+`red backpack sitting on a rock in the woods` (6/6), `fluffy cat ...` (1/5), reszta bez
+przymiotników obiektu. `P_ground_gsa.yaml` nie ustawia `attr_strip` → kolor wchodził promptem;
+`token_mask_lora: true` dodatkowo ogranicza deltę do pozycji `class_word`, więc tokeny
+`yellow`/`rubber` szły przez zamrożone K/V. `gen_cifc.py` dokłada `eval_prefix`, więc artefakt
+był niewidoczny, dopóki sonda nie promptowała goło. Trening bez atrybutów: job 21592961
+(`P_ground_gsa_nocap`, seed 2024, sparowany z bazą), ewaluacja 21601163 (`afterok`).
+Od `e442b47` każdy trening drukuje captiony per task.
+
 ## 1k. SDXL — KOLUMNA DOMKNIĘTA (2026-08-19 rano)
 
 - **Macierz forgettingu kompletna** (rescue): **DINO +0.0012, CLIP-I +0.0019** — ta sama
