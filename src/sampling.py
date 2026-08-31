@@ -86,10 +86,18 @@ def ddim_sample(
     bs_mask = None
     if bootstrap_steps > 0 and getattr(manager, "cond_box", None) is not None:
         cx, cy, bw, bh = manager.cond_box
-        bs_mask = torch.zeros(1, 1, lh, lw, device=device, dtype=dtype)
-        y0, y1 = int((cy - bh / 2) * lh), max(int((cy - bh / 2) * lh) + 1, int(round((cy + bh / 2) * lh)))
-        x0, x1 = int((cx - bw / 2) * lw), max(int((cx - bw / 2) * lw) + 1, int(round((cx + bw / 2) * lw)))
-        bs_mask[:, :, y0:y1, x0:x1] = 1.0
+        # Maska z MIEKKA krawedzia. Twarda podmiana latentu zostawia szew: obiekt bywa uciety
+        # dokladnie na granicy ramki (widoczne na cat2/dog2), a metryki to NAGRADZAJA, bo uciety
+        # obiekt lezy w calosci w ramce i zawarcie rosnie. Rozmycie o `bs_feather` komorek daje
+        # trajektorii pas, w ktorym moze zszyc obie strony.
+        ys = torch.arange(lh, device=device, dtype=torch.float32).view(-1, 1)
+        xs = torch.arange(lw, device=device, dtype=torch.float32).view(1, -1)
+        fe = float(getattr(manager, "bs_feather", 2.0))
+        t_y0, t_y1 = (cy - bh / 2) * lh, (cy + bh / 2) * lh
+        t_x0, t_x1 = (cx - bw / 2) * lw, (cx + bw / 2) * lw
+        m_y = torch.sigmoid((ys - t_y0) / fe) * torch.sigmoid((t_y1 - ys) / fe)
+        m_x = torch.sigmoid((xs - t_x0) / fe) * torch.sigmoid((t_x1 - xs) / fe)
+        bs_mask = (m_y * m_x).clamp(0, 1)[None, None].to(dtype)
         if bootstrap_bg is not None:
             bootstrap_bg = bootstrap_bg.to(device=device, dtype=dtype)
 

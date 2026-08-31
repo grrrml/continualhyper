@@ -91,7 +91,8 @@ for j, c in enumerate(cfg["concepts"]):
     print(f"[grid] {c['concept_id']}: {len(row)} obrazkow", flush=True)
 
 cell, pad, lab = 256, 6, 120
-Wg = lab + (cell + pad) * 2 * N
+Wg = lab + (cell + pad) * len(BOXES) * N     # bylo zaszyte '2' (pisane pod polowki):
+                                             # przy --quads kolumny BL i BR byly ucinane
 Hg = (cell + pad) * len(rows)
 sheet = Image.new("RGB", (Wg, Hg), (255, 255, 255))
 d = ImageDraw.Draw(sheet)
