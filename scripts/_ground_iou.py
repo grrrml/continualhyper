@@ -162,6 +162,25 @@ def ref_fill(c):
     return (sum(vals) / len(vals)) if vals else None
 
 
+def bg_stats(img, dmask):
+    """Jakosc TLA: srednia energia gradientu i odchylenie jasnosci na pikselach POZA maska
+    obiektu. Zaden inny licznik w tym skrypcie tla nie widzi (IoU dotyczy ramki, dRGB pikseli
+    obiektu, DINO jest zdominowane przez obiekt), a plaskie tlo to obserwowany artefakt kappa.
+    Liczby maja sens tylko W PORNANIU miedzy konfiguracjami na tych samych ziarnach."""
+    g = img.float().mean(0)
+    gx = (g[:, 1:] - g[:, :-1]).abs()
+    gy = (g[1:, :] - g[:-1, :]).abs()
+    grad = torch.zeros_like(g)
+    grad[:, :-1] += gx
+    grad[:, 1:] += gx
+    grad[:-1, :] += gy
+    grad[1:, :] += gy
+    bg = (~dmask) if dmask is not None else torch.ones_like(g, dtype=torch.bool)
+    if int(bg.sum()) < 1000:
+        return None
+    return float(grad[bg].mean()), float(g[bg].std())
+
+
 @torch.no_grad()
 def dino_feat(pil):
     return Fn.normalize(dino.m(dino.tf(pil).unsqueeze(0).to("cuda")), dim=-1)
@@ -212,7 +231,8 @@ def crops(img, mode):
     return {"F": img}
 
 
-KEYS = ("iou", "hit", "con", "fill", "q", "n", "ndet", "dino", "dcol", "ncol")
+KEYS = ("iou", "hit", "con", "fill", "q", "n", "ndet", "dino", "dcol", "ncol",
+        "bgg", "bgs", "nbg")
 for kap, sched, conf in GRID:
     manager.ground_gain_base = kap
     manager.ground_sched_frac = sched
@@ -265,6 +285,11 @@ for kap, sched, conf in GRID:
                         gcol_n += 1
                         st["dcol"] += float(np.linalg.norm(gc - rcol))
                         st["ncol"] += 1
+                bs = bg_stats(img, dmask)
+                if bs is not None:
+                    st["bgg"] += bs[0]
+                    st["bgs"] += bs[1]
+                    st["nbg"] += 1
                 if a.out and i == 0:
                     dr = ImageDraw.Draw(pil)
                     dr.rectangle(req, outline=(255, 0, 0), width=3)
@@ -276,6 +301,8 @@ for kap, sched, conf in GRID:
               f"IoU {st['iou']/nd:.3f} | IoU>0.5 {st['hit']/nd:.0%} | zawarcie {st['con']/nd:.2f} | "
               f"wypelnienie {st['fill']/nd:.2f} | DINO {st['dino']/n:.4f} | "
               f"det {int(st['ndet'])}/{int(st['n'])} {paths}", flush=True)
+        nbg = max(1.0, st["nbg"])
+        print(f"  {'':<16} tlo grad {st['bgg']/nbg:.4f} | tlo std {st['bgs']/nbg:.4f}", flush=True)
         rf = ref_fill(c)
         if rf is not None:
             print(f"  {'':<16} obiekt w kadrze referencji: {rf:.2f}", flush=True)
@@ -291,5 +318,7 @@ for kap, sched, conf in GRID:
           f"IoU {agg['iou']/nd:.3f} | IoU>0.5 {agg['hit']/nd:.0%} | zawarcie {agg['con']/nd:.2f} | "
           f"wypelnienie {agg['fill']/nd:.2f} | DINO {agg['dino']/n:.4f} | "
           f"kolor dRGB {agg['dcol']/max(1.0, agg['ncol']):.3f} | "
+          f"tlo grad {agg['bgg']/max(1.0, agg['nbg']):.4f} | "
+          f"tlo std {agg['bgs']/max(1.0, agg['nbg']):.4f} | "
           f"det {int(agg['ndet'])}/{int(agg['n'])}", flush=True)
 print("IOU_DONE", flush=True)
