@@ -32,6 +32,9 @@ esac
 export CLUSTER PARTITION ACCOUNTS PYTHON VENV WHEELS DATA_ROOT
 export CPUS_PER_GPU MEM_PER_GPU
 export HF_HOME="$HF_CACHE"
+# Wagi z torch.hub / torchvision (detektory, DINO) ida na $SCRATCH, nie do $HOME:
+# $HOME ma 100 000 inodow na wszystko, a domyslny ~/.cache/torch rosnie po cichu.
+export TORCH_HOME="${TORCH_HOME:-$SCRATCH/.cache/torch}"
 export TOKENIZERS_PARALLELISM=false
 export PYTHONUNBUFFERED=1
 export MPLBACKEND=Agg          # wezly nie maja wyswietlacza; plt.show() by cicho gubil figury

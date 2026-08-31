@@ -427,6 +427,13 @@ class GroundedAttnProcessor:
                     read_h = attn.head_to_batch_dim(read)                            # [B*hd, n, d/hd]
                     ins = inside.unsqueeze(0)                                        # [1, n, 1]
                     gain = float(getattr(self.manager, "ground_gain", 1.0))
+                    # kappa per ROZDZIELCZOSC mapy: uklad rozstrzyga sie na mapach 8/16,
+                    # kolor i tekstura na 32/64. Wstrzyk jednakowy na wszystkich 16 attn2
+                    # przy kappa>1 maluje kolorem tam, gdzie mial tylko wskazac miejsce.
+                    # None -> mnoznik 1.0 wszedzie, czyli bitowo obecne zachowanie.
+                    gres = getattr(self.manager, "ground_gain_res", None)
+                    if gres:
+                        gain *= float(gres.get(gh, 1.0))
                     out = out + gain * torch.tanh(gate).to(out.dtype) * ins * read_h
             g = None
         else:
