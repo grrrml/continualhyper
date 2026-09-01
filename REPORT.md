@@ -374,6 +374,43 @@ Figury: `assets/figures/grid_nocapall_k2_boot10_TLTR.jpg` (twarda, tylko TL/TR �
 szerokości arkusza, naprawiona), `grid_nocapall_soft.jpg` (miękka, szare tła),
 `grid_nocapall_dil.jpg` (dylatacja, 4 kolumny).
 
+### Obwódki obiektów: poświata z wycinków treningowych — NAPRAWIONE (2026-09-01)
+
+Użytkownik zauważył na siatce, że obiekty „wyglądają jakby miały obrysy". Rozkład na trzy
+przypadki (ten sam checkpoint, te same ziarna) wskazał winowajcę: rant jest **obecny z ramką**
+(κ=1 i κ=2, z bootstrapem i bez) i **nieobecny bez ramki** — czyli wchodzi ze ścieżką groundingu,
+nie z podmianą latentu i nie z amplitudy.
+
+Przyczyna jest w danych. Wycinki z isnet mają **~10-pikselowy gradient alfy** (zmierzony profil
+`[1,3,6,13,26,49,81,122,164,201,228,244]`), który wmieszuje kolor tła **ZE ZDJĘCIA ŹRÓDŁOWEGO**
+w brzeg obiektu — miś ma jasną poświatę po sylwetce, bo jego oryginalne tło było jasne. Ta
+poświata jest potem wklejana na inne tło, a `box_aug_p: 0.5` znaczy, że **połowa kroków
+treningu** pokazywała koncept jako wycinek z rantem. GSA było trenowane właśnie na tych
+wklejkach, więc im mocniej sterujemy tą ścieżką, tym wierniej model odtwarza wyuczony wygląd
+wklejki — łącznie z obwódką.
+
+Poprawka: `training.alpha_erode` (min-pooling alfy przed wklejką) cofa brzeg do wnętrza obiektu,
+więc skrajne piksele mają kolor OBIEKTU. `alpha_erode: 0` zachowuje stare zachowanie, więc
+poprzednie configi i wyniki pozostają odtwarzalne. Trening: `P_ground_gsa_erode` (job 21746202).
+
+Wynik przy κ=2/s=0.3 bez bootstrapu, prompt ze sceną, 84 generacje:
+
+| | ćwiartki | IoU>0.5 | zawarcie | wypełn. | TA | DINOwyc | kolor | tło std |
+|---|---|---|---|---|---|---|---|---|
+| `nocap_all` | 62% | 30% | 0.53 | 1.74 | 0.8057 | 0.7077 | 0.111 | 0.1638 |
+| **`erode`** | 73% | 24% | 0.54 | 1.68 | 0.8095 | **0.7180** | 0.121 | 0.1694 |
+
+Obwódki zniknęły wizualnie (`assets/figures/grid_erode.jpg` vs `grid_nocapall_dil.jpg`), a
+metryki stoją albo lekko rosną: DINO na wycinku +0.010, TA i zawieranie bez zmian, detekcja
+84/84 w obu. Kolor −0.010 i IoU>0.5 −6 pp mieszczą się w zmierzonym szumie samplingowym
+(0.015 dla koloru, ~10 pp dla IoU>0.5). **Erozja jest darmowa, a `P_ground_gsa_erode` jest
+obecnie najlepszym checkpointem: pełny strip atrybutów obiektu + brak poświaty wklejkowej.**
+
+Do zapamiętania metodologicznie: to **trzeci** silent bug w obróbce danych znaleziony w tym
+projekcie (po przecieku atrybutu i po niespójności zestawu referencyjnego) i **czwarty raz**,
+gdy defekt wskazało oko na siatce, a nie liczba. Przy twierdzeniach o sterowalności tabela bez
+siatki jest niewystarczająca.
+
 ### SUFIT BENCHMARKU: per-koncept DINO jest ograniczone spójnością referencji (2026-08-31)
 
 `scripts/_ref_selfsim.py` (job 21684620). `self_par` = średnie podobieństwo DINO **par zdjęć
