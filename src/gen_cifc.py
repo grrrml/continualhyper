@@ -94,6 +94,10 @@ def parse_args():
     p.add_argument("--seed", type=int, default=2024)
     p.add_argument("--final_only", action="store_true",
                    help="only the final checkpoint over all concepts (no full matrix)")
+    p.add_argument("--ground_gain", type=float, default=None,
+                   help="nadpisuje kappa galezi groundingu; 0 wylacza wstrzykniecie "
+                        "(regional.py bramkuje na >0), co izoluje dryf tej galezi od "
+                        "zmiany rozkladu treningowego")
     p.add_argument("--only_concepts", default=None,
                    help="comma-separated concept_ids to (re)generate; others left untouched")
     p.add_argument("--lora_scale", type=float, default=1.0,
@@ -169,6 +173,9 @@ def main():
     if getattr(manager, "ground_cond", False):
         from .regional import set_grounded
         set_grounded(bundle.unet, manager)
+        if args.ground_gain is not None:
+            manager.ground_gain = float(args.ground_gain)
+            print(f"[gen] ground_gain={manager.ground_gain}", flush=True)
     manager.eval()
     if getattr(manager, "scale_cond", False):
         # scale is an INPUT to the head here, not a multiplier -- multiplying as well would
