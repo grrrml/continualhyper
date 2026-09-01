@@ -237,6 +237,19 @@ groundingu, i to ona uzasadnia uczynienie nocap wersją główną.
   stałe κ w treningu to reparametryzacja. Sens ma tylko κ **losowane**, jako regularyzacja
   odporności na skalę — i nie podniesie szczytowego placementu.
 
+**(h) Pułapka: udany trening ze statusem TIMEOUT zabija łańcuch `afterok` (2026-09-01).** Job
+21746202 zrobił CAŁĄ robotę — wypisał `[CL] DONE`, zapisał `hyper.pt` (100 MB) — a Slurm dał mu
+`State=TIMEOUT` przy `Elapsed 01:00:07`, przy kroku `batch=COMPLETED`. Python wyszedł (runner
+zdążył wypisać `DONE`), ale **serwis wandb zostaje w grupie procesów joba** i trzyma go do ściany
+czasu; `wandb.finish()` jest wywoływane (`train_cl.py:562`) i nie wystarcza. Skutek: dwie sondy
+dowiązane przez `--dependency=afterok` przesiedziały **12 godzin** w `DependencyNeverSatisfied`
+i nigdy by nie wystartowały, choć checkpoint był poprawny od pierwszej minuty. Wnioski:
+(1) łańcuchy po treningu wiązać przez **`afterany`**, nie `afterok`, i pozwolić sondzie paść na
+braku pliku; (2) przy diagnozie zawieszonej kolejki czytać `squeue -o "%R"`, bo
+`DependencyNeverSatisfied` w `sacct` wygląda identycznie jak zwykłe `PENDING`; (3) gdyby to miało
+się nie powtarzać: `WANDB_MODE=offline` w treningach i `wandb sync` z login-noda — kosztem
+konwencji „W&B online", więc decyzja użytkownika.
+
 **(g) Pułapka infrastrukturalna, kosztowała trzy padłe zadania.** Job zapisał figurę do katalogu
 **śledzonego gitem** na klastrze (`assets/figures/`), a ta sama ścieżka została zacommitowana
 lokalnie — `git pull --ff-only` odmawia nadpisania pliku nieśledzonego, więc klon został 5
