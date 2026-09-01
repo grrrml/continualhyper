@@ -2,11 +2,22 @@
 i obiektow pierwszoplanowych (baza SD-1.5, bez adapterow). ~100 obrazow @512 -> data/backgrounds.
 Run: python -m scripts._gen_backgrounds
 """
-import os, torch
+import argparse, os, torch
 from contextlib import contextmanager
 from torchvision.utils import save_image
 from src.sampling import ddim_sample
-from src.sd_loader import load_sd
+from src.sd_loader import load_sd, load_sdxl
+
+ap = argparse.ArgumentParser()
+ap.add_argument("--out", default="data/backgrounds")
+ap.add_argument("--size", type=int, default=512, help="rozdzielczosc; SDXL wymaga 1024")
+ap.add_argument("--sdxl", action="store_true",
+                help="generuj bazowym SDXL zamiast SD-1.5. Tla musza pochodzic z tego samego "
+                     "backbone'u i tej samej rozdzielczosci co trening, ktory je wkleja - "
+                     "upsampling 512 -> 1024 wnosi bias tekstury, a wlasnie ustalilismy, ze "
+                     "brzegi i faktura wklejek maja znaczenie (obwodki, erozja alfy)")
+ap.add_argument("--steps", type=int, default=30)
+a = ap.parse_args()
 
 
 class _NoLoRA:
@@ -47,22 +58,25 @@ SCENES = [
 ]
 PER_SCENE = 5
 
-out = "data/backgrounds"
+out = a.out
 os.makedirs(out, exist_ok=True)
 dev = torch.device("cuda")
-b = load_sd(device=dev, dtype="fp16")
+b = load_sdxl(device=dev, dtype="fp16") if a.sdxl else load_sd(device=dev, dtype="fp16")
+side = a.size // 8
+print(f"[bg] backbone {'SDXL' if a.sdxl else 'SD-1.5'} | {a.size}px | {a.steps} krokow "
+      f"-> {out}", flush=True)
 mgr = _NoLoRA()
 neg = "person, animal, object in foreground, text, watermark"
 n_total = 0
 for si, scene in enumerate(SCENES):
     ctx, pooled, _ = b.encode_text([scene])
     unc, _, _ = b.encode_text([neg])
-    lat = torch.stack([torch.randn((b.latent_channels, 64, 64),
+    lat = torch.stack([torch.randn((b.latent_channels, side, side),
                        generator=torch.Generator(device=dev).manual_seed(5000 + si * 100 + j),
                        device=dev, dtype=b.dtype) for j in range(PER_SCENE)])
-    imgs = ddim_sample(b, mgr, ctx, unc, pooled, num_inference_steps=30,
+    imgs = ddim_sample(b, mgr, ctx, unc, pooled, num_inference_steps=a.steps,
                        guidance_scale=7.5, batch_size=PER_SCENE, scheduler=b.dpm_scheduler,
-                       latents=lat)
+                       height=a.size, width=a.size, latents=lat)
     for j in range(PER_SCENE):
         save_image(imgs[j], os.path.join(out, f"bg_{si:02d}_{j}.jpg"))
         n_total += 1

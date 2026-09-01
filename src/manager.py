@@ -111,7 +111,13 @@ class ContinualHyperManager(nn.Module):
         self.ground_cond = bool(tc.get("ground_cond", False))
         self.ground_head = None
         self.ground_gates = None
-        self._ground_vec = None              # [1, clip_dim] current concept+box embedding
+        self._ground_vec = None              # [1, M, ground_tok_dim] concept+box embedding
+        # Szerokosc tokenow groundingu = wymiar warunkowania hipersieci: 768 na SD-1.5, ale
+        # 1280 na SDXL (te2.projection_dim). Byla zaszyta jako 768 w init_ground_gsa, co na
+        # SDXL wywalalo pierwszy krok z groundingiem na niezgodnosci ksztaltu.
+        self.ground_tok_dim = int(clip_dim)
+        # Ga³ki inferencyjne groundingu trzymane jawnie, zeby nie zyly w ukrytych getattr:
+        self.bs_dilate = 3               # rozszerzenie ramki bootstrapu w komorkach latentu
         if self.ground_cond:
             gin = (int(tc.get("key_dim") or clip_dim)) + 64
             _m = int(tc.get("ground_gsa_tokens", 4)) if bool(tc.get("ground_gsa", False)) else 1
@@ -266,8 +272,8 @@ class ContinualHyperManager(nn.Module):
         for n, d in layer_dims.items():
             mods[_key(n)] = nn.ModuleDict({
                 "q": nn.Linear(d, 64, bias=False),
-                "k": nn.Linear(768, 64, bias=False),
-                "v": nn.Linear(768, 64, bias=False),
+                "k": nn.Linear(self.ground_tok_dim, 64, bias=False),
+                "v": nn.Linear(self.ground_tok_dim, 64, bias=False),
                 "o": nn.Linear(64, d, bias=False),
             })
         self.ground_gsa_mods = nn.ModuleDict(mods)
@@ -299,7 +305,7 @@ class ContinualHyperManager(nn.Module):
         if k not in self.ground_gsa_mods:
             return None
         m = self.ground_gsa_mods[k]
-        e = self._ground_vec.to(x.device)                              # [1, M, 768]
+        e = self._ground_vec.to(x.device)                    # [1, M, ground_tok_dim]
         gb = self._ground_film_gb.to(x.device)                         # [1, 128]
         gamma, beta = gb[:, :64], gb[:, 64:]
         xf = x.float()
