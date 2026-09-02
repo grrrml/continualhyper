@@ -111,6 +111,7 @@ def main():
     lookahead_lr = float(reg_cfg.get("lookahead_lr", lr))   # von-Oswald candidate-step size (default = lr)
     # Domyslnie WYLACZONE, zeby wszystkie dotychczasowe configi odtwarzaly sie bez zmian.
     ground_anchor = bool(reg_cfg.get("ground_anchor", False))
+    ground_anchor_gates = bool(reg_cfg.get("ground_anchor_gates", False))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # fp32 backbone for the baseline (no grad-scaler headaches; hyper grads stay clean).
@@ -289,6 +290,7 @@ def main():
         # von-Oswald: snapshot the hypernet output on OLD concepts at the START of this task (Theta*)
         targets, anchors = None, None
         ground_targets, ground_ids = None, list(range(len(anchor_conds)))
+        gate_targets = None
         if reg_weight > 0 and anchor_conds:
             anchors = torch.stack(anchor_conds, 0)           # [k, clip_size], already conditioned
             with torch.no_grad():
@@ -297,6 +299,9 @@ def main():
                 if ground_anchor:
                     gt = manager.generate_ground(ground_ids)
                     ground_targets = None if gt is None else [t.detach() for t in gt]
+                if ground_anchor_gates and getattr(manager, 'ground_gates', None) is not None:
+                    gate_targets = {n: p.detach().clone()
+                                    for n, p in manager.ground_gates.named_parameters()}
 
         for step in range(steps_per_task):
             batch = next(data_iter)
@@ -457,6 +462,15 @@ def main():
                     # nie wchodza w ten czlon, wiec ich gradient jest None.
                     g_reg_g = torch.autograd.grad(reg_g, mod_params, allow_unused=True)
                     reg_val_g = float(reg_g.item())
+                if gate_targets is not None:
+                    reg_gate = reg_weight * sum(
+                        F.mse_loss(p, gate_targets[n])
+                        for n, p in manager.ground_gates.named_parameters())
+                    g_gate = torch.autograd.grad(reg_gate, mod_params, allow_unused=True)
+                    g_reg_g = g_gate if g_reg_g is None else tuple(
+                        a if b_ is None else (b_ if a is None else a + b_)
+                        for a, b_ in zip(g_reg_g, g_gate))
+                    reg_val_g += float(reg_gate.item())
                 for p, gi, gr in zip(params, g, g_reg):    # heads: task grad + reg grad
                     p.grad = gi + gr
                 for p, gi in zip(task_params, g_task):     # V_k: task grad only (anchors are frozen)
@@ -487,7 +501,8 @@ def main():
             if step % log_every == 0 or step == steps_per_task - 1:
                 print(f"[CL] task {k}:{spec.concept_id} | step {step:4d} | loss {loss.item():.4f}"
                       + (f" | reg {reg_val:.4f}" if targets is not None else "")
-                      + (f" | regG {reg_val_g:.4f}" if ground_targets is not None else ""), flush=True)
+                      + (f" | regG {reg_val_g:.6f}"
+                         if (ground_targets is not None or gate_targets is not None) else ""), flush=True)
             if wandb is not None:
                 wandb.log({"loss": float(loss.item()), "reg": reg_val, "task": k, "task_step": step,
                            "lora_magnitude": float(manager.current_lora_magnitude().item())}, step=gstep)
