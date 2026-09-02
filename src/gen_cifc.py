@@ -95,9 +95,9 @@ def parse_args():
     p.add_argument("--final_only", action="store_true",
                    help="only the final checkpoint over all concepts (no full matrix)")
     p.add_argument("--ground_gain", type=float, default=None,
-                   help="nadpisuje kappa galezi groundingu; 0 wylacza wstrzykniecie "
-                        "(regional.py bramkuje na >0), co izoluje dryf tej galezi od "
-                        "zmiany rozkladu treningowego")
+                   help="nadpisuje kappa galezi groundingu (ground_gain_base); 0 wylacza "
+                        "wstrzykniecie i izoluje dryf tej galezi od zmiany rozkladu "
+                        "treningowego")
     p.add_argument("--only_concepts", default=None,
                    help="comma-separated concept_ids to (re)generate; others left untouched")
     p.add_argument("--lora_scale", type=float, default=1.0,
@@ -174,8 +174,13 @@ def main():
         from .regional import set_grounded
         set_grounded(bundle.unet, manager)
         if args.ground_gain is not None:
+            # ground_gain_base, NIE ground_gain: sampling.py nadpisuje ground_gain na
+            # KAZDYM kroku odszumiania z base i harmonogramu, wiec ustawienie samego
+            # ground_gain jest no-opem (job 21766671 zwrocil wyniki identyczne do
+            # czwartego miejsca wlasnie dlatego).
+            manager.ground_gain_base = float(args.ground_gain)
             manager.ground_gain = float(args.ground_gain)
-            print(f"[gen] ground_gain={manager.ground_gain}", flush=True)
+            print(f"[gen] ground_gain_base={manager.ground_gain_base}", flush=True)
     manager.eval()
     if getattr(manager, "scale_cond", False):
         # scale is an INPUT to the head here, not a multiplier -- multiplying as well would
