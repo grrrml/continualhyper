@@ -109,6 +109,8 @@ def main():
     scale_min = float((cfg.get("task_cond") or {}).get("scale_min", 0.3))
     scale_kappa = float((cfg.get("task_cond") or {}).get("scale_kappa", 1e-3))
     lookahead_lr = float(reg_cfg.get("lookahead_lr", lr))   # von-Oswald candidate-step size (default = lr)
+    # Domyslnie WYLACZONE, zeby wszystkie dotychczasowe configi odtwarzaly sie bez zmian.
+    ground_anchor = bool(reg_cfg.get("ground_anchor", False))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # fp32 backbone for the baseline (no grad-scaler headaches; hyper grads stay clean).
@@ -286,11 +288,15 @@ def main():
 
         # von-Oswald: snapshot the hypernet output on OLD concepts at the START of this task (Theta*)
         targets, anchors = None, None
+        ground_targets, ground_ids = None, list(range(len(anchor_conds)))
         if reg_weight > 0 and anchor_conds:
             anchors = torch.stack(anchor_conds, 0)           # [k, clip_size], already conditioned
             with torch.no_grad():
                 targets = {n: (a.detach(), b.detach())
                            for n, (a, b) in manager.generate_lora(anchors).items()}
+                if ground_anchor:
+                    gt = manager.generate_ground(ground_ids)
+                    ground_targets = None if gt is None else [t.detach() for t in gt]
 
         for step in range(steps_per_task):
             batch = next(data_iter)
@@ -411,7 +417,7 @@ def main():
                 loss = loss + scale_kappa * (1.0 - s_cur) * dw / len(manager.layer_names)
 
             optimizer.zero_grad(set_to_none=True)
-            reg_val = 0.0
+            reg_val, reg_val_g = 0.0, 0.0
             emb_params = [emb_weight] if cur_tid is not None else []
             # The prompt-modulation net is NOT part of `params` (which is heads-only) but still
             # needs a gradient: the manual autograd.grad path below bypasses .backward(), so
@@ -442,12 +448,22 @@ def main():
                 perturbed = {nm: p + delta[nm] for nm, p in named}
                 reg = reg_weight * _reg_mse(manager.lora_from_params(anchors, perturbed), targets)
                 g_reg = torch.autograd.grad(reg, params)
+                g_reg_g = None
+                if ground_targets is not None:
+                    cur_g = manager.generate_ground(ground_ids)
+                    reg_g = reg_weight * sum(F.mse_loss(c, t)
+                                             for c, t in zip(cur_g, ground_targets))
+                    # allow_unused: bramki, projekcje odczytu GSA i FiLM warunkowane ramka
+                    # nie wchodza w ten czlon, wiec ich gradient jest None.
+                    g_reg_g = torch.autograd.grad(reg_g, mod_params, allow_unused=True)
+                    reg_val_g = float(reg_g.item())
                 for p, gi, gr in zip(params, g, g_reg):    # heads: task grad + reg grad
                     p.grad = gi + gr
                 for p, gi in zip(task_params, g_task):     # V_k: task grad only (anchors are frozen)
                     p.grad = gi
-                for p, gi in zip(mod_params, g_mod):   # prompt modulation: task grad only
-                    p.grad = gi
+                for i_mp, (p, gi) in enumerate(zip(mod_params, g_mod)):
+                    gg = None if g_reg_g is None else g_reg_g[i_mp]
+                    p.grad = gi if gg is None else gi + gg
                 if emb_params:
                     g_emb = g_all[len(params) + len(task_params)]
                     emb_weight.grad = torch.zeros_like(g_emb)
@@ -470,7 +486,8 @@ def main():
             gstep += 1
             if step % log_every == 0 or step == steps_per_task - 1:
                 print(f"[CL] task {k}:{spec.concept_id} | step {step:4d} | loss {loss.item():.4f}"
-                      + (f" | reg {reg_val:.4f}" if targets is not None else ""), flush=True)
+                      + (f" | reg {reg_val:.4f}" if targets is not None else "")
+                      + (f" | regG {reg_val_g:.4f}" if ground_targets is not None else ""), flush=True)
             if wandb is not None:
                 wandb.log({"loss": float(loss.item()), "reg": reg_val, "task": k, "task_step": step,
                            "lora_magnitude": float(manager.current_lora_magnitude().item())}, step=gstep)

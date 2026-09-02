@@ -264,6 +264,26 @@ class ContinualHyperManager(nn.Module):
         if self.ground_geo:
             self._ground_boxvec = self.ground_box_proj(fb.to(dev))    # [1, 64]
 
+    def generate_ground(self, task_ids) -> Optional[List[torch.Tensor]]:
+        """Tokeny groundingu i FiLM dla podanych zadan przy KANONICZNEJ ramce pelnoklatkowej.
+
+        Kotwica von Oswalda obejmuje tylko czynniki LoRA, a galaz groundingu niesie czesc
+        tozsamosci konceptu: wylaczenie jej na inferencji kosztuje 8.2 IA i 11.1 DINO, a
+        forgetting spada wtedy z 0.0151 do 0.0014 (job 21797990). Przypinamy wiec WYLACZNIE
+        wklad bezramkowy, ten, ktory psuje stare koncepty w protokole bez ramki; zachowanie
+        warunkowane prawdziwa ramka zostaje wolne, bo umiejscowienie jest umiejetnoscia
+        wspolna dla zadan i ma sie poprawiac ze strumieniem.
+        """
+        if self.ground_head is None or len(task_ids) == 0:
+            return None
+        keys = self.canon_pooled[task_ids].float()                       # [k, d]
+        fb = self._fourier_box((0.5, 0.5, 1.0, 1.0)).to(keys.device)     # [1, F]
+        gv = self.ground_head(torch.cat([keys, fb.expand(keys.shape[0], -1)], dim=-1))
+        out = [gv]
+        if self.ground_film is not None:
+            out.append(self.ground_film(keys))
+        return out
+
     def init_ground_gsa(self, layer_dims: dict) -> None:
         """layer_dims: nazwa to_q -> in_features. Wspolne waskie projekcje per warstwa."""
         if not self.ground_gsa or self.ground_gsa_mods is not None:
