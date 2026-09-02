@@ -109,6 +109,8 @@ class ContinualHyperManager(nn.Module):
         # the hypernet emits a grounding vector e = G(key, fourier(box)); attn2 layers add a
         # zero-init-gated, position-dependent contribution tanh(g_l)*sigmoid(<q_i,Ke>)*Ve.
         self.ground_cond = bool(tc.get("ground_cond", False))
+        # Bez prawdziwej ramki galaz milczy -- patrz komentarz w set_ground.
+        self.ground_boxonly = bool(tc.get("ground_boxonly", False))
         self.ground_head = None
         self.ground_gates = None
         self._ground_vec = None              # [1, M, ground_tok_dim] concept+box embedding
@@ -246,8 +248,15 @@ class ContinualHyperManager(nn.Module):
         self.canon_pooled[task_idx] = key.to(self.canon_pooled.dtype)
 
     def set_ground(self, task_idx: Optional[int], box=None) -> None:
-        """Compute the grounding vector for (concept, box); None disables grounding."""
-        if self.ground_head is None or task_idx is None:
+        """Compute the grounding vector for (concept, box); None disables grounding.
+
+        Z ground_boxonly brak ramki wylacza galaz CALKOWICIE, a nie otwiera maski na
+        pelna klatke. Bez tego galaz dostaje gradient na krokach bez ramki (polowa
+        treningu), uczy sie niesc tozsamosc konceptu i wnosi swoj dryf do protokolu
+        bezramkowego, co podnosi forgetting dziesieciokrotnie.
+        """
+        if self.ground_head is None or task_idx is None \
+                or (self.ground_boxonly and box is None):
             self._ground_vec = None
             return
         key = self.canon_pooled[task_idx:task_idx + 1].float()
