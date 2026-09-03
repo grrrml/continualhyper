@@ -25,6 +25,69 @@ from torch.utils.data import Dataset
 _IMG_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
 
 
+# --- Protokol CIFC: augmentacja promptu i opisy tla ---------------------------------
+# 27 szablonow obiektowych, doslownie z EnhanceText w mixofshow/data/pil_transform.py.
+OBJECT_TEMPLATES = (
+    "a photo of a {}", "a rendering of a {}", "a cropped photo of the {}",
+    "the photo of a {}", "a photo of a clean {}", "a photo of a dirty {}",
+    "a dark photo of the {}", "a photo of my {}", "a photo of the cool {}",
+    "a close-up photo of a {}", "a bright photo of the {}", "a cropped photo of a {}",
+    "a photo of the {}", "a good photo of the {}", "a photo of one {}",
+    "a close-up photo of the {}", "a rendition of the {}", "a photo of the clean {}",
+    "a rendition of a {}", "a photo of a nice {}", "a good photo of a {}",
+    "a photo of the nice {}", "a photo of the small {}", "a photo of the weird {}",
+    "a photo of the large {}", "a photo of a cool {}", "a photo of a small {}",
+)
+
+# Sceny banku tel. Generator zapisuje pliki jako bg_<indeks sceny>_<j>.jpg, a trening
+# odzyskuje z nazwy opis tla, na ktorym obiekt naprawde stoi.
+BG_SCENES = (
+    "a sandy beach with gentle waves, empty",
+    "a green meadow with wildflowers, empty",
+    "a forest clearing with soft sunlight",
+    "a quiet city street with cobblestones, empty",
+    "a cozy living room interior, empty floor",
+    "a wooden kitchen table by a window",
+    "a park lawn with trees in the background",
+    "a snowy field under an overcast sky",
+    "a desert landscape with distant dunes",
+    "a stone patio in a garden, empty",
+    "a lakeside shore at golden hour, empty",
+    "a minimalist studio with plain backdrop",
+    "a rustic barn interior with hay, empty",
+    "a mountain trail with rocks and grass",
+    "a library room with bookshelves, empty floor",
+    "an autumn park with fallen leaves, empty",
+    "a brick wall alley with soft light, empty",
+    "a bathroom with tiled floor, empty",
+    "a wooden pier over calm water, empty",
+    "a grassy hill under a blue sky, empty",
+)
+
+
+def scene_for_bg(path: str) -> Optional[str]:
+    """Opis tla z nazwy pliku bg_<scena>_<j>.jpg; None, gdy nazwa nie pasuje.
+
+    Klauzula "empty" opisuje tlo BEZ obiektu, a w kompozycie obiekt na nim stoi, wiec ja
+    obcinamy -- inaczej podpis przeczylby obrazowi drugi raz, tylko subtelniej.
+    """
+    stem = os.path.basename(path)
+    if not stem.startswith("bg_"):
+        return None
+    try:
+        idx = int(stem.split("_")[1])
+    except (IndexError, ValueError):
+        return None
+    if not 0 <= idx < len(BG_SCENES):
+        return None
+    return ", ".join(p for p in BG_SCENES[idx].split(", ") if not p.startswith("empty"))
+
+
+def enhance(caption: str, rng=random) -> str:
+    """Wklada podpis w losowy szablon obiektowy (EnhanceText, enhance_type='object')."""
+    return rng.choice(OBJECT_TEMPLATES).format(caption)
+
+
 @dataclass
 class ConceptSpec:
     concept_id: str

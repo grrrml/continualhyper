@@ -30,7 +30,7 @@ from torch.utils.data import DataLoader
 from torchvision.utils import save_image
 
 from .common import load_config, save_hyper, set_seed
-from .data import ConceptDataset, collate_fn, specs_from_config
+from .data import ConceptDataset, collate_fn, specs_from_config, enhance, scene_for_bg
 from .injection import DEFAULT_TARGETS
 from .losses import reconstruction_loss
 from .manager import build_hyper
@@ -160,6 +160,10 @@ def main():
         print(f"[CL] learned tokens ON: {sorted(token_ids)} (tok_lr={tok_lr})", flush=True)
 
     box_aug_p = float(cfg.get("training", {}).get("box_aug_p", 0.5))
+    # Protokol CIFC (data/CIFC/options/cidm/task_*.yml) trenuje wszystkie metody
+    # porownawcze z EnhanceText. Domyslnie wylaczone, zeby stare configi sie odtwarzaly.
+    prompt_aug = bool(cfg.get("training", {}).get("prompt_aug", False))
+    paste_caption = bool(cfg.get("training", {}).get("paste_caption", False))
     # segmentowana wklejka (objective v2): caly wyciety obiekt (RGBA) na naturalne tlo,
     # strata BEZ maski -> ramka jest informacyjnie konieczna przy wysokim szumie
     # `alpha_erode`: gradient alfy w wycinkach (isnet + feather ~10 px) wmieszuje kolor tla
@@ -171,7 +175,7 @@ def main():
     alpha_erode = int(cfg.get("training", {}).get("alpha_erode", 0))
     seg_dir = cfg.get("training", {}).get("seg_dir")
     bg_dir = cfg.get("training", {}).get("bg_dir")
-    seg_bank, bg_bank = {}, []
+    seg_bank, bg_bank, bg_scenes = {}, [], []
     if seg_dir and bg_dir:
         import glob as _glob
         from PIL import Image as _PIL
@@ -181,6 +185,7 @@ def main():
             im = _PIL.open(f).convert("RGB").resize((res0, res0), _PIL.LANCZOS)
             t = torch.from_numpy(_np.asarray(im)).permute(2, 0, 1).float() / 127.5 - 1.0
             bg_bank.append(t)
+            bg_scenes.append(scene_for_bg(f))
         for spec_ in specs:
             fs = sorted(_glob.glob(os.path.join(seg_dir, spec_.concept_id, "*.png")))
             cuts = []
@@ -349,7 +354,12 @@ def main():
                         else:                # pozycja wspolna, wymiar moze sie minimalnie rozjechac
                             x0 = min(max(int(box[0] * H - nw / 2), 0), H - nw)
                             y0 = min(max(int(box[1] * H - nh / 2), 0), H - nh)
-                        bg = bg_bank[int(torch.randint(0, len(bg_bank), (1,)).item())].clone()
+                        bgi = int(torch.randint(0, len(bg_bank), (1,)).item())
+                        if paste_caption and bg_scenes[bgi]:
+                            # podpis opisuje tlo, na ktorym obiekt NAPRAWDE stoi, w formie
+                            # promptow ewaluacyjnych ("A <TOK>, in the forest")
+                            captions[bi] = f"{spec.replacement}, {bg_scenes[bgi]}"
+                        bg = bg_bank[bgi].clone()
                         reg = bg[:, y0:y0 + nh, x0:x0 + nw]
                         bg[:, y0:y0 + nh, x0:x0 + nw] = reg * (1 - al) + rgb * al
                         comp.append(bg)
@@ -382,6 +392,8 @@ def main():
                 t = torch.randint(lo, bundle.num_train_timesteps, (bsz,), device=device)
             z_t = bundle.noise_scheduler.add_noise(z0, noise, t)
 
+            if prompt_aug:
+                captions = [enhance(c) for c in captions]
             tok_mask = (token_span_mask(bundle.tokenizer, captions, spec.replacement).to(device)
                         if tm_enabled else None)
             # `scale_cond`: s is sampled per step and fed to the head instead of multiplying the

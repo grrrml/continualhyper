@@ -56,6 +56,10 @@ SCENES = [
     "a wooden pier over calm water, empty",
     "a grassy hill under a blue sky, empty",
 ]
+from src.data import BG_SCENES as _BG_SCENES
+# Jedno zrodlo prawdy: trening odzyskuje opis tla z nazwy pliku przez src.data,
+# wiec rozjechanie sie tych dwoch list dawaloby podpisy opisujace inna scene.
+assert tuple(SCENES) == _BG_SCENES, "SCENES rozjechalo sie z src.data.BG_SCENES"
 PER_SCENE = 5
 
 out = a.out
