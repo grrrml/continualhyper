@@ -443,8 +443,10 @@ def main():
                          + ([] if getattr(manager, 'latent_emb', None) is None else list(manager.latent_emb.parameters()))
             if targets is not None:
                 # Stage 1: candidate step that minimizes ONLY the new-task loss (detached).
+                # allow_unused: z ground_boxonly galaz milczy na krokach bez ramki, wiec jej
+                # parametry nie sa w grafie i bez tego autograd rzuca wyjatkiem (job 21827099).
                 g_all = torch.autograd.grad(loss, params + task_params + emb_params + mod_params,
-                                            retain_graph=False)
+                                            retain_graph=False, allow_unused=True)
                 g = g_all[:len(params)]
                 g_task = g_all[len(params):len(params) + len(task_params)]
                 g_mod = g_all[len(g_all) - len(mod_params):] if mod_params else []
@@ -477,7 +479,9 @@ def main():
                     p.grad = gi
                 for i_mp, (p, gi) in enumerate(zip(mod_params, g_mod)):
                     gg = None if g_reg_g is None else g_reg_g[i_mp]
-                    p.grad = gi if gg is None else gi + gg
+                    if gi is None and gg is None:
+                        continue                      # parametr nieuzyty na tym kroku
+                    p.grad = gg if gi is None else (gi if gg is None else gi + gg)
                 if emb_params:
                     g_emb = g_all[len(params) + len(task_params)]
                     emb_weight.grad = torch.zeros_like(g_emb)
