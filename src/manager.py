@@ -258,18 +258,24 @@ class ContinualHyperManager(nn.Module):
         if self.ground_head is None or task_idx is None \
                 or (self.ground_boxonly and box is None):
             self._ground_vec = None
+            self._ground_box = None      # inaczej zostaje ramka z poprzedniego wywolania
             return
+        # box moze byc JEDNA ramka (cztery liczby) albo LISTA ramek, po jednej na probke
+        multi = box is not None and not isinstance(box[0], (int, float))
+        boxes = [tuple(b) for b in box] if multi else \
+            [tuple(box) if box is not None else (0.5, 0.5, 1.0, 1.0)]
         key = self.canon_pooled[task_idx:task_idx + 1].float()
-        fb = self._fourier_box(box if box is not None else (0.5, 0.5, 1.0, 1.0))
         dev = key.device
-        gv = self.ground_head(torch.cat([key, fb.to(dev)], dim=-1))
+        keys = key.expand(len(boxes), -1)
+        fb = torch.cat([self._fourier_box(b) for b in boxes], dim=0)
+        gv = self.ground_head(torch.cat([keys, fb.to(dev)], dim=-1))
         self._ground_vec = gv.reshape(1, -1, gv.shape[-1] // max(1, gv.shape[-1] // 768)) \
             if False else gv
         if self.ground_gsa:
-            self._ground_vec = gv.reshape(1, self.ground_gsa_tokens, -1)   # [1, M, 768]
-            self._ground_film_gb = self.ground_film(key)                    # [1, 128] -> (gamma|beta)
+            self._ground_vec = gv.reshape(len(boxes), self.ground_gsa_tokens, -1)  # [B, M, D]
+            self._ground_film_gb = self.ground_film(keys)                   # [B, 128] -> (gamma|beta)
         if self.ground_geo_analytic or self.ground_gsa:
-            self._ground_box = tuple(box) if box is not None else (0.5, 0.5, 1.0, 1.0)
+            self._ground_box = boxes if multi else boxes[0]
         if self.ground_geo:
             self._ground_boxvec = self.ground_box_proj(fb.to(dev))    # [1, 64]
 
@@ -318,13 +324,18 @@ class ContinualHyperManager(nn.Module):
             grid = torch.stack([xx.reshape(-1), yy.reshape(-1)], dim=1)
             self._geo_grid_cache[key] = grid
         g = grid.to(device=device, dtype=torch.float32)
-        cx, cy, bw, bh = self._ground_box or (0.5, 0.5, 1.0, 1.0)
-        sh = 40.0
-        inside = (torch.sigmoid(sh * (g[:, 0] - (cx - bw / 2)))
-                  * torch.sigmoid(sh * ((cx + bw / 2) - g[:, 0]))
-                  * torch.sigmoid(sh * (g[:, 1] - (cy - bh / 2)))
-                  * torch.sigmoid(sh * ((cy + bh / 2) - g[:, 1])))
-        return inside.to(dtype).unsqueeze(1)
+        gb = self._ground_box or (0.5, 0.5, 1.0, 1.0)
+
+        def _mask(cx, cy, bw, bh):
+            sh = 40.0
+            return (torch.sigmoid(sh * (g[:, 0] - (cx - bw / 2)))
+                    * torch.sigmoid(sh * ((cx + bw / 2) - g[:, 0]))
+                    * torch.sigmoid(sh * (g[:, 1] - (cy - bh / 2)))
+                    * torch.sigmoid(sh * ((cy + bh / 2) - g[:, 1])))
+
+        if isinstance(gb, list):                       # ramka per probka -> [B, n, 1]
+            return torch.stack([_mask(*b) for b in gb], 0).to(dtype).unsqueeze(-1)
+        return _mask(*gb).to(dtype).unsqueeze(1)       # [n, 1], jak dotad
 
     def gsa_read(self, attn2_name: str, x: torch.Tensor) -> Optional[torch.Tensor]:
         """Uwaga czytajaca: x [B,n,d] -> wklad [B,n,d] (bez gate'a i maski - dodaje procesor)."""

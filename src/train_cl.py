@@ -345,7 +345,7 @@ def main():
                     import torch.nn.functional as Fnn
                     H = images.shape[-1]
                     comp = []
-                    box = None
+                    boxes = []          # ramka per probka
                     for bi in range(bsz):
                         rgb, al = cuts[int(torch.randint(0, len(cuts), (1,)).item())]
                         ch, cw = rgb.shape[-2:]
@@ -368,22 +368,18 @@ def main():
                             ksz = 2 * alpha_erode + 1
                             al = -Fnn.max_pool2d(-al[None], ksz, stride=1,
                                                  padding=alpha_erode)[0]
-                        if box is None:      # JEDNA ramka na krok (set_ground jest per krok)
-                            x0 = int(torch.randint(0, H - nw + 1, (1,)).item())
-                            y0 = int(torch.randint(0, H - nh + 1, (1,)).item())
-                            if paste_flush > 0:
-                                if cut_b > paste_flush:
-                                    y0 = H - nh          # uciety u dolu -> na dol kadru
-                                elif cut_t > paste_flush:
-                                    y0 = 0
-                                if cut_r > paste_flush:
-                                    x0 = H - nw          # uciety z prawej -> do prawej
-                                elif cut_l > paste_flush:
-                                    x0 = 0
-                            box = ((x0 + nw / 2) / H, (y0 + nh / 2) / H, nw / H, nh / H)
-                        else:                # pozycja wspolna, wymiar moze sie minimalnie rozjechac
-                            x0 = min(max(int(box[0] * H - nw / 2), 0), H - nw)
-                            y0 = min(max(int(box[1] * H - nh / 2), 0), H - nh)
+                        x0 = int(torch.randint(0, H - nw + 1, (1,)).item())
+                        y0 = int(torch.randint(0, H - nh + 1, (1,)).item())
+                        if paste_flush > 0:
+                            if cut_b > paste_flush:
+                                y0 = H - nh              # uciety u dolu -> na dol kadru
+                            elif cut_t > paste_flush:
+                                y0 = 0
+                            if cut_r > paste_flush:
+                                x0 = H - nw              # uciety z prawej -> do prawej
+                            elif cut_l > paste_flush:
+                                x0 = 0
+                        boxes.append(((x0 + nw / 2) / H, (y0 + nh / 2) / H, nw / H, nh / H))
                         bgi = int(torch.randint(0, len(bg_bank), (1,)).item())
                         if paste_caption and bg_scenes[bgi]:
                             # podpis opisuje tlo, na ktorym obiekt NAPRAWDE stoi, w formie
@@ -394,7 +390,8 @@ def main():
                         bg[:, y0:y0 + nh, x0:x0 + nw] = reg * (1 - al) + rgb * al
                         comp.append(bg)
                     images = torch.stack(comp).to(device)
-                    manager.cond_box = box
+                    # jedna ramka -> krotka (sciezka bitowo jak dotad), wiele -> lista
+                    manager.cond_box = boxes[0] if len(boxes) == 1 else boxes
                 elif not cuts and torch.rand(1).item() < box_aug_p and not (seg_dir and bg_dir):
                     # stara wklejka prostokatna (objective v1) - tylko gdy seg-paste wylaczone
                     import torch.nn.functional as Fnn

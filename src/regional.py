@@ -467,7 +467,10 @@ class GroundedAttnProcessor:
                     inside = self.manager.geo_inside(gh, gw, out.device, out.dtype)  # [n,1]
                     heads = attn.heads
                     read_h = attn.head_to_batch_dim(read)                            # [B*hd, n, d/hd]
-                    ins = inside.unsqueeze(0)                                        # [1, n, 1]
+                    # b-major: head_to_batch_dim daje indeks b*heads+h, wiec maska per
+                    # probka idzie przez repeat_interleave, NIE repeat
+                    ins = inside.unsqueeze(0) if inside.ndim == 2 \
+                        else inside.repeat_interleave(heads, dim=0)   # [B*hd, n, 1]
                     gain = float(getattr(self.manager, "ground_gain", 1.0))
                     # kappa per ROZDZIELCZOSC mapy: uklad rozstrzyga sie na mapach 8/16,
                     # kolor i tekstura na 32/64. Wstrzyk jednakowy na wszystkich 16 attn2
