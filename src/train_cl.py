@@ -73,6 +73,13 @@ def _sample(bundle, manager, prompt, out_dir, n, steps, gscale, seed, task_idx=N
         save_image(img, os.path.join(out_dir, f"sample_{i:02d}.png"))
 
 
+def _paste_scale(lo: float, hi: float, full_p: float) -> float:
+    """Skala wklejanego obiektu; z prawdopodobienstwem full_p z trybu pelnokadrowego."""
+    if full_p > 0 and float(torch.rand(1).item()) < full_p:
+        return float(torch.empty(1).uniform_(0.9, 1.0).item())
+    return float(torch.empty(1).uniform_(lo, hi).item())
+
+
 def _reg_mse(now, targets):
     """von-Oswald output reg: mean over layers of MSE on (x_L, x_R) between the current LoRA
     `now` and the start-of-task snapshot `targets`. F.mse_loss averages over anchors+elements."""
@@ -162,6 +169,13 @@ def main():
     box_aug_p = float(cfg.get("training", {}).get("box_aug_p", 0.5))
     # Protokol CIFC (data/CIFC/options/cidm/task_*.yml) trenuje wszystkie metody
     # porownawcze z EnhanceText. Domyslnie wylaczone, zeby stare configi sie odtwarzaly.
+    # Skala wklejanego obiektu jako frakcja dluzszego wymiaru kadru. Domyslnie jak dotad.
+    _ps = cfg.get("training", {}).get("paste_scale", [0.45, 0.85])
+    paste_lo, paste_hi = float(_ps[0]), float(_ps[1])
+    # Prawdopodobienstwo pobrania skali z drugiego trybu przy pelnym kadrze: bez niego
+    # kompozyty nigdy nie pokazuja obiektu wypelniajacego kadr, a metryki calo-obrazowe
+    # wlasnie to nagradzaja.
+    paste_full_p = float(cfg.get("training", {}).get("paste_scale_full_p", 0.0))
     prompt_aug = bool(cfg.get("training", {}).get("prompt_aug", False))
     paste_caption = bool(cfg.get("training", {}).get("paste_caption", False))
     # segmentowana wklejka (objective v2): caly wyciety obiekt (RGBA) na naturalne tlo,
@@ -332,7 +346,7 @@ def main():
                     for bi in range(bsz):
                         rgb, al = cuts[int(torch.randint(0, len(cuts), (1,)).item())]
                         ch, cw = rgb.shape[-2:]
-                        sc = float(torch.empty(1).uniform_(0.45, 0.85).item())
+                        sc = _paste_scale(paste_lo, paste_hi, paste_full_p)
                         r = sc * H / max(ch, cw)
                         nh, nw = max(8, int(ch * r)), max(8, int(cw * r))
                         rgb = Fnn.interpolate(rgb[None], size=(nh, nw), mode="bilinear",
@@ -368,7 +382,7 @@ def main():
                 elif not cuts and torch.rand(1).item() < box_aug_p and not (seg_dir and bg_dir):
                     # stara wklejka prostokatna (objective v1) - tylko gdy seg-paste wylaczone
                     import torch.nn.functional as Fnn
-                    sc = float(torch.empty(1).uniform_(0.45, 0.85).item())
+                    sc = _paste_scale(paste_lo, paste_hi, paste_full_p)
                     H = images.shape[-1]; hw = max(8, int(round(H * sc)) // 8 * 8)
                     small = Fnn.interpolate(images, size=(hw, hw), mode="bilinear",
                                             align_corners=False)
