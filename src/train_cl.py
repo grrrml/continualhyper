@@ -176,6 +176,9 @@ def main():
     # kompozyty nigdy nie pokazuja obiektu wypelniajacego kadr, a metryki calo-obrazowe
     # wlasnie to nagradzaja.
     paste_full_p = float(cfg.get("training", {}).get("paste_scale_full_p", 0.0))
+    # Wycinek przeciety granica cropu dosuwamy ta krawedzia do brzegu kadru.
+    # Domyslnie wylaczone, zeby dotychczasowe przebiegi sie odtwarzaly.
+    paste_flush = float(cfg.get("training", {}).get("paste_flush", 0.0))
     prompt_aug = bool(cfg.get("training", {}).get("prompt_aug", False))
     paste_caption = bool(cfg.get("training", {}).get("paste_caption", False))
     # segmentowana wklejka (objective v2): caly wyciety obiekt (RGBA) na naturalne tlo,
@@ -353,6 +356,10 @@ def main():
                                               align_corners=False)[0]
                         al = Fnn.interpolate(al[None], size=(nh, nw), mode="bilinear",
                                              align_corners=False)[0].clamp(0, 1)
+                        # PRZED erozja: min-pool z zerowym paddingiem zeruje skrajne
+                        # piksele, wiec po nim kazda krawedz wyglada na przezroczysta
+                        cut_t, cut_b = float(al[0, 0].mean()), float(al[0, -1].mean())
+                        cut_l, cut_r = float(al[0, :, 0].mean()), float(al[0, :, -1].mean())
                         if alpha_erode > 0:
                             # UWAGA na nazwe: `k` to w tej petli INDEKS TASKA. Uzycie go na
                             # rozmiar jadra nadpisywalo task numerem 2*erode+1 (job 21744547
@@ -364,6 +371,15 @@ def main():
                         if box is None:      # JEDNA ramka na krok (set_ground jest per krok)
                             x0 = int(torch.randint(0, H - nw + 1, (1,)).item())
                             y0 = int(torch.randint(0, H - nh + 1, (1,)).item())
+                            if paste_flush > 0:
+                                if cut_b > paste_flush:
+                                    y0 = H - nh          # uciety u dolu -> na dol kadru
+                                elif cut_t > paste_flush:
+                                    y0 = 0
+                                if cut_r > paste_flush:
+                                    x0 = H - nw          # uciety z prawej -> do prawej
+                                elif cut_l > paste_flush:
+                                    x0 = 0
                             box = ((x0 + nw / 2) / H, (y0 + nh / 2) / H, nw / H, nh / H)
                         else:                # pozycja wspolna, wymiar moze sie minimalnie rozjechac
                             x0 = min(max(int(box[0] * H - nw / 2), 0), H - nw)
