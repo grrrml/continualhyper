@@ -104,11 +104,16 @@ def ddim_sample(
         if bootstrap_bg is not None:
             bootstrap_bg = bootstrap_bg.to(device=device, dtype=dtype)
 
+    _MISSING = object()
+    _prev_gain = getattr(manager, "ground_gain", _MISSING)
     for i, t in enumerate(steps_list):
         hook = getattr(manager, "_step_hook", None)
         if hook is not None:                # composition: refresh region masks from attention
             hook(i, len(steps_list))
         if getattr(manager, "ground_cond", False):
+            # UWAGA: to MUTUJE manager.ground_gain, ktory czyta takze trening (regional
+            # mnozy przez niego wstrzykniecie GSA). Bez przywrocenia na koncu diagnostyka
+            # w trakcie treningu zostawialaby wartosc z ostatniego kroku samplingu.
             # harmonogram kappa (GLIGEN-style): grounding aktywny tylko przez poczatkowa
             # frakcje krokow (uklad rozstrzyga sie przy wysokim szumie); potem czysty model+LoRA
             frac = i / max(1, len(steps_list))
@@ -150,6 +155,11 @@ def ddim_sample(
             noise_pred = noise_uncond + guidance_scale * (noise_cond - noise_uncond)
         latents = scheduler.step(noise_pred, t, latents).prev_sample
 
+    if _prev_gain is _MISSING:
+        if hasattr(manager, "ground_gain"):
+            del manager.ground_gain
+    else:
+        manager.ground_gain = _prev_gain
     return bundle.decode_latents(latents)
 
 
