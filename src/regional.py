@@ -447,7 +447,12 @@ class GroundedAttnProcessor:
                     # ktore niosa cale zdanie (zmierzone w tym repo: audit 2885915).
                     # cummax => kara od pierwszego tokenu konceptu do konca sekwencji.
                     mine = torch.cummax(mine, dim=0).values
-                s = s - conf * (outside * mine[None, :]).unsqueeze(0)
+                # outside: [n,1] przy jednej ramce, [B,n,1] przy ramce per probka.
+                # s ma [B*heads, n, tokeny], wiec wersja zbatchowana wymaga tego samego
+                # repeat_interleave co maska GSA (head_to_batch_dim jest b-major).
+                pen = outside * mine[None, :] if outside.dim() == 2 else outside * mine[None, None, :]
+                s = s - conf * (pen.unsqueeze(0) if outside.dim() == 2
+                                else pen.repeat_interleave(attn.heads, dim=0))
         out = torch.bmm(s.softmax(dim=-1).to(v.dtype), v)
 
         if getattr(self.manager, "ground_gsa", False) and encoder_hidden_states is not None:
