@@ -408,6 +408,11 @@ def main():
                     lm = torch.zeros(1, 1, H // 8, H // 8, device=device)
                     lm[:, :, y0 // 8:(y0 + hw) // 8, x0 // 8:(x0 + hw) // 8] = 1.0
                     loss_mask = lm
+            if prompt_aug:
+                # MUSI byc przed encode_text: inaczej UNet dostaje podpis bez szablonu,
+                # a token_span_mask liczy sie na innym lancuchu niz zakodowany, wiec LoRA
+                # trafia w przesuniete pozycje tokenow.
+                captions = [enhance(c) for c in captions]
             cond_hidden, pooled, _ = bundle.encode_text(captions, train_tokens=cur_tid is not None)
             z0 = bundle.encode_images(images)
             noise = torch.randn_like(z0)
@@ -419,8 +424,6 @@ def main():
                 t = torch.randint(lo, bundle.num_train_timesteps, (bsz,), device=device)
             z_t = bundle.noise_scheduler.add_noise(z0, noise, t)
 
-            if prompt_aug:
-                captions = [enhance(c) for c in captions]
             tok_mask = (token_span_mask(bundle.tokenizer, captions, spec.replacement).to(device)
                         if tm_enabled else None)
             # `scale_cond`: s is sampled per step and fed to the head instead of multiplying the
