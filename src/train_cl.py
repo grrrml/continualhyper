@@ -47,7 +47,7 @@ def _gen_one(bundle, manager, prompt, steps, gscale, seed, task_idx=None, mask_p
     manager.eval()
     manager.cond_box = box
     cond_hidden, pooled, _ = bundle.encode_text([prompt])
-    uncond_hidden, _, _ = bundle.encode_text([""])
+    uncond_hidden, uncond_pooled, _ = bundle.encode_text([""])
     token_mask = None
     if mask_phrase:
         from .tokens import token_span_mask
@@ -58,7 +58,8 @@ def _gen_one(bundle, manager, prompt, steps, gscale, seed, task_idx=None, mask_p
                       num_inference_steps=steps, guidance_scale=gscale, batch_size=1,
                       height=res, width=res,
                       generator=gen, scheduler=bundle.dpm_scheduler,
-                      task_idx=task_idx, token_mask=token_mask)[0].clamp(0, 1).cpu()
+                      task_idx=task_idx, token_mask=token_mask,
+                      uncond_pooled=uncond_pooled)[0].clamp(0, 1).cpu()
     manager.train()
     return img
 
@@ -331,6 +332,9 @@ def main():
             images = batch["pixel_values"].to(device)
             captions = batch["captions"]
             bsz = images.shape[0]
+            # mikro-warunkowanie SDXL: rozmiar zrodla i offset cropu zdjecia (data._load_image);
+            # kompozyt na tle `resolution` jest natywny i nieprzyciety -> nadpisywane nizej
+            orig_size, crop = batch["orig_size"], batch["crop"]
 
             # `box_cond`: with prob box_aug_p shrink the photo and paste it at a random spot;
             # the box is KNOWN exactly (that's the whole point of paste-supervision), and the
@@ -396,6 +400,7 @@ def main():
                         bg[:, y0:y0 + nh, x0:x0 + nw] = reg * (1 - al) + rgb * al
                         comp.append(bg)
                     images = torch.stack(comp).to(device)
+                    orig_size = torch.full((bsz, 2), H); crop = torch.zeros(bsz, 2, dtype=torch.long)
                     # jedna ramka -> krotka (sciezka bitowo jak dotad), wiele -> lista
                     manager.cond_box = boxes[0] if len(boxes) == 1 else boxes
                 elif not cuts and torch.rand(1).item() < box_aug_p and not (seg_dir and bg_dir):
@@ -410,6 +415,7 @@ def main():
                     canvas = torch.zeros_like(images)          # szare tlo w [-1,1]
                     canvas[:, :, y0:y0 + hw, x0:x0 + hw] = small
                     images = canvas
+                    orig_size = torch.full((bsz, 2), H); crop = torch.zeros(bsz, 2, dtype=torch.long)
                     manager.cond_box = ((x0 + hw / 2) / H, (y0 + hw / 2) / H, hw / H, hw / H)
                     lm = torch.zeros(1, 1, H // 8, H // 8, device=device)
                     lm[:, :, y0 // 8:(y0 + hw) // 8, x0 // 8:(x0 + hw) // 8] = 1.0
@@ -450,7 +456,8 @@ def main():
             manager.set_context(pooled, task_idx=k, token_mask=tok_mask)  # timestep-independent LoRA
             manager.compute_and_cache_loras()
             manager.enable_lora()
-            ac = bundle.added_cond(z_t.shape[0], resolution, resolution, pooled=pooled) \
+            ac = bundle.added_cond(z_t.shape[0], resolution, resolution, pooled=pooled,
+                                   orig_size=orig_size, crop=crop) \
                 if getattr(bundle, "is_sdxl", False) else None
             eps_pred = unet(z_t, t, encoder_hidden_states=cond_hidden,
                             added_cond_kwargs=ac).sample
@@ -545,18 +552,24 @@ def main():
                         keep[:tail_lock] = 0.0                 # key block stays frozen
                     emb_weight.grad = torch.zeros_like(emb_weight.grad)
                     emb_weight.grad[cur_tid] = keep
+            gnorm = 0.0
             if grad_clip > 0:
-                torch.nn.utils.clip_grad_norm_(params + task_params + emb_params + mod_params, grad_clip)
+                # norma PRZED klipem: przy 87.5 M parametrow (SDXL) klip przy 1.0 dziala czesciej
+                # niz przy 21 M, czyli efektywny LR jest nizszy -- bez tej liczby tego nie widac
+                gnorm = float(torch.nn.utils.clip_grad_norm_(
+                    params + task_params + emb_params + mod_params, grad_clip))
             optimizer.step()
 
             gstep += 1
             if step % log_every == 0 or step == steps_per_task - 1:
                 print(f"[CL] task {k}:{spec.concept_id} | step {step:4d} | loss {loss.item():.4f}"
+                      + f" | gnorm {gnorm:.3f}"
                       + (f" | reg {reg_val:.4f}" if targets is not None else "")
                       + (f" | regG {reg_val_g:.6f}"
                          if (ground_targets is not None or gate_targets is not None) else ""), flush=True)
             if wandb is not None:
                 wandb.log({"loss": float(loss.item()), "reg": reg_val, "task": k, "task_step": step,
+                           "grad_norm": gnorm,
                            "lora_magnitude": float(manager.current_lora_magnitude().item())}, step=gstep)
                 if diag_freq > 0 and gstep % diag_freq == 0:   # 0 -> no mid-training images
                     # diagnostic generations for ALL concepts seen so far -> forgetting visible live

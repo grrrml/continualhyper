@@ -37,6 +37,7 @@ def ddim_sample(
     bootstrap_bg: Optional[torch.Tensor] = None,   # ABLACJA: podstaw zewnetrzny latent tla
                                        # zamiast trybu bezwarunkowego (wymaga danych na wejsciu,
                                        # wiec nie jest to wersja docelowa - patrz komentarz nizej)
+    uncond_pooled: Optional[torch.Tensor] = None,  # SDXL: pooled promptu negatywnego (patrz nizej)
 ) -> torch.Tensor:
     """Returns images in [0,1], shape [batch_size, 3, H, W]."""
     device, dtype = bundle.device, bundle.dtype
@@ -56,8 +57,16 @@ def ddim_sample(
     ac_c = bundle.added_cond(batch_size, height, width, pooled=clip_pooled) \
         if hasattr(bundle, "added_cond") else {}
     ac_u = dict(ac_c)
-    if ac_c:                              # uncond: zerowe pooled embeds (standard SDXL CFG)
-        ac_u = {**ac_c, "text_embeds": torch.zeros_like(ac_c["text_embeds"])}
+    if ac_c:
+        # SDXL: pipeline zeruje sekwencje I pooled RAZEM (tylko przy pustym negatywie);
+        # przy podanym prompcie negatywnym oba pochodza z enkoderow. Do 2026-09-07
+        # galaz uncond dostawala sekwencje NEG z zerowym pooled - kombinacje, ktorej model
+        # nigdy nie widzial, a blad uncond mnozy sie w CFG przez (1 - guidance).
+        # `uncond_pooled=None` zachowuje stare zachowanie (odtwarzalnosc wczesniejszych liczb).
+        if uncond_pooled is not None:
+            ac_u = bundle.added_cond(batch_size, height, width, pooled=uncond_pooled)
+        else:
+            ac_u = {**ac_c, "text_embeds": torch.zeros_like(ac_c["text_embeds"])}
     uncond_seq = uncond_hidden.to(device=device, dtype=dtype).expand(batch_size, -1, -1)
 
     # Timestep-independent LoRA: compute ONCE from the pooled prompt, reuse every step.

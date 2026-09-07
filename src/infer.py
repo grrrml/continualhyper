@@ -78,7 +78,7 @@ def main():
         token_mask = token_span_mask(bundle.tokenizer, [prompt], phrase)
 
     cond_hidden, pooled, _ = bundle.encode_text([prompt])
-    uncond_hidden, _, _ = bundle.encode_text([args.negative])
+    uncond_hidden, uncond_pooled, _ = bundle.encode_text([args.negative])
     scheduler = bundle.dpm_scheduler if args.sampler == "dpm" else bundle.ddim_scheduler
     os.makedirs(args.out, exist_ok=True)
     print(f"[infer] prompt: {prompt}", flush=True)
@@ -87,7 +87,7 @@ def main():
         img = ddim_sample(bundle, manager, cond_hidden, uncond_hidden, pooled,
                           num_inference_steps=args.steps, guidance_scale=args.guidance_scale,
                           batch_size=1, generator=gen, scheduler=scheduler, task_idx=task_idx,
-                          token_mask=token_mask)
+                          token_mask=token_mask, uncond_pooled=uncond_pooled)
         save_image(img, os.path.join(args.out, f"sample_{i:03d}.png"))
         print(f"[infer] saved {args.out}/sample_{i:03d}.png", flush=True)
 

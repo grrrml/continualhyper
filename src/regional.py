@@ -418,9 +418,14 @@ class GroundedAttnProcessor:
         q = attn.head_to_batch_dim(attn.to_q(hidden_states))
         k = attn.head_to_batch_dim(attn.to_k(ctx))
         v = attn.head_to_batch_dim(attn.to_v(ctx))
+        # Logity w fp32. Domyslny procesor (SDPA) trzyma QK^T i softmax w fp32 niezaleznie od
+        # dtype modelu; `baddbmm` w q.dtype zaokraglal logity do bf16 (ulp 0.0625 przy
+        # |logit|~8, czyli ~3% bledu wag uwagi) na wszystkich 70 attn2 SDXL przez caly
+        # trening bf16 -- baza bez groundingu tego szumu nie ma, wiec "podatek groundingu"
+        # na SDXL byl zmieszany z numeryka kernela. Na SD-1.5 (trening fp32) to no-op.
         s = torch.baddbmm(torch.zeros(q.shape[0], q.shape[1], k.shape[1],
-                                      device=q.device, dtype=q.dtype),
-                          q, k.transpose(-1, -2), beta=0, alpha=attn.scale)
+                                      device=q.device, dtype=torch.float32),
+                          q.float(), k.float().transpose(-1, -2), beta=0, alpha=attn.scale)
         # `ground_confine`: kara w logicie dla pozycji POZA ramka na tokenach konceptu.
         # Metryka IoU pokazala, ze wstrzyk GSA steruje POLOZENIEM najwyrazistszej czesci,
         # ale nie ROZCIAGLOSCIA obiektu (wypelnienie 1.9-2.4 ramki): dodaje tresc w ramce,

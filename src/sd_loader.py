@@ -123,16 +123,30 @@ class ModelBundle:
         return torch.cat([h1, h2], dim=-1), pooled, attention_mask
 
     def added_cond(self, batch_size: int, height: Optional[int] = None,
-                   width: Optional[int] = None, pooled: Optional[torch.Tensor] = None) -> dict:
-        """SDXL micro-conditioning: {text_embeds, time_ids}. Empty dict on SD-1.5."""
+                   width: Optional[int] = None, pooled: Optional[torch.Tensor] = None,
+                   orig_size: Optional[torch.Tensor] = None,
+                   crop: Optional[torch.Tensor] = None) -> dict:
+        """SDXL micro-conditioning: {text_embeds, time_ids}. Empty dict on SD-1.5.
+
+        time_ids = (orig_h, orig_w, crop_top, crop_left, target_h, target_w). Bez `orig_size`
+        i `crop` (inferencja) obraz jest natywny i nieprzyciety: (h, w, 0, 0, h, w). W treningu
+        podac prawdziwy rozmiar zrodla [B,2] i offset cropu [B,2] (patrz data._load_image).
+        """
         if not self.is_sdxl:
             return {}
         h = height or self.default_resolution; w = width or self.default_resolution
-        tid = torch.tensor([h, w, 0, 0, h, w], device=self.device, dtype=self.dtype)
+        if orig_size is None:
+            tid = torch.tensor([h, w, 0, 0, h, w], device=self.device, dtype=self.dtype)
+            tid = tid[None].expand(batch_size, -1)
+        else:
+            o = orig_size.to(self.device, self.dtype)
+            c = (crop if crop is not None else torch.zeros_like(orig_size)).to(self.device, self.dtype)
+            tgt = torch.tensor([[h, w]], device=self.device, dtype=self.dtype).expand(o.shape[0], -1)
+            tid = torch.cat([o, c, tgt], dim=-1)                 # [B, 6]
         pe = pooled.to(self.device, self.dtype)
         if pe.shape[0] != batch_size:          # one prompt, many images: expand to the batch
             pe = pe[:1].expand(batch_size, -1)
-        return {"text_embeds": pe, "time_ids": tid[None].expand(batch_size, -1)}
+        return {"text_embeds": pe, "time_ids": tid}
 
     # ------------------------------------------------------------------ vae
     @torch.no_grad()

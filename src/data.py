@@ -110,7 +110,16 @@ class ConceptSpec:
         return self.prompt or f"a photo of {self.replacement}"
 
 
-def _load_image(path: str, resolution: int, augment: bool = False) -> torch.Tensor:
+def _load_image(path: str, resolution: int, augment: bool = False):
+    """-> (tensor [-1,1] [3,H,W], (orig_h, orig_w), (crop_top, crop_left)).
+
+    Rozmiar zrodla i offset cropu sa mikro-warunkowaniem SDXL (`time_ids`): model uczyl sie,
+    ze obraz o malym `original_size` jest rozmyty po powiekszeniu, a przesuniety crop ucina
+    obiekt. Do 2026-09-07 trening podawal stale (res, res, 0, 0), czyli ze kazdy powiekszony
+    crop (dog 780 px, ink_painting 512 px przy 1024) jest natywnym, nieprzycietym obrazem.
+    Offset cropu podawany w ukladzie po przeskalowaniu do `resolution`, jak w skryptach
+    treningowych diffusers. Na SD-1.5 wartosci sa ignorowane.
+    """
     img = Image.open(path).convert("RGB")
     w, h = img.size
     if augment:
@@ -124,10 +133,12 @@ def _load_image(path: str, resolution: int, augment: bool = False) -> torch.Tens
             img = img.transpose(Image.FLIP_LEFT_RIGHT)
     else:
         s = min(w, h)
-        img = img.crop(((w - s) // 2, (h - s) // 2, (w - s) // 2 + s, (h - s) // 2 + s))
+        x0, y0 = (w - s) // 2, (h - s) // 2
+        img = img.crop((x0, y0, x0 + s, y0 + s))
     img = img.resize((resolution, resolution), Image.BICUBIC)
     arr = torch.from_numpy(np.asarray(img, dtype=np.float32) / 255.0).permute(2, 0, 1)
-    return arr * 2.0 - 1.0  # [-1,1], [3,H,W]
+    crop = (int(round(y0 * resolution / s)), int(round(x0 * resolution / s)))
+    return arr * 2.0 - 1.0, (h, w), crop  # [-1,1], [3,H,W]
 
 
 class ConceptDataset(Dataset):
@@ -163,14 +174,17 @@ class ConceptDataset(Dataset):
     def __getitem__(self, idx: int) -> dict:
         path = self.paths[idx % len(self.paths)]
         stem = os.path.splitext(os.path.basename(path))[0]
-        return {"pixel_values": _load_image(path, self.resolution, self.augment),
-                "caption": self._caption(stem)}
+        px, orig, crop = _load_image(path, self.resolution, self.augment)
+        return {"pixel_values": px, "caption": self._caption(stem),
+                "orig_size": torch.tensor(orig), "crop": torch.tensor(crop)}
 
 
 def collate_fn(batch: List[dict]) -> dict:
     return {
         "pixel_values": torch.stack([b["pixel_values"] for b in batch], 0),
         "captions": [b["caption"] for b in batch],
+        "orig_size": torch.stack([b["orig_size"] for b in batch], 0),   # [B,2] (h,w) zrodla
+        "crop": torch.stack([b["crop"] for b in batch], 0),             # [B,2] (top,left)
     }
 
 

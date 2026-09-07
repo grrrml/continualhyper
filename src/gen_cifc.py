@@ -41,11 +41,14 @@ def _read_prompts(category):
 
 @torch.no_grad()
 def gen_concept(bundle, manager, gen_repl, clipt_repl, category, out_dir, n, steps, gscale, seed,
-                task_idx=None, mask_phrase=None, lora_start_frac=0.0, sample_batch=1):
+                task_idx=None, mask_phrase=None, lora_start_frac=0.0, sample_batch=1,
+                uncond_legacy_zero=False):
     prompts = _read_prompts(category)
     sdir = os.path.join(out_dir, "samples")
     os.makedirs(sdir, exist_ok=True)
-    uncond_hidden, _, _ = bundle.encode_text([NEG])
+    uncond_hidden, uncond_pooled, _ = bundle.encode_text([NEG])
+    if uncond_legacy_zero:
+        uncond_pooled = None            # SDXL sprzed 2026-09-07: zerowe pooled przy sekwencji NEG
     res = int(getattr(bundle, "default_resolution", 512))     # 512 (SD-1.5) / 1024 (SDXL)
     lat_shape = (bundle.latent_channels, res // 8, res // 8)
     info, count = [], 0
@@ -72,7 +75,7 @@ def gen_concept(bundle, manager, gen_repl, clipt_repl, category, out_dir, n, ste
                                height=res, width=res,
                                scheduler=bundle.dpm_scheduler, task_idx=task_idx,
                                token_mask=token_mask, lora_start_frac=lora_start_frac,
-                               latents=lat)
+                               latents=lat, uncond_pooled=uncond_pooled)
             for i in range(bs):
                 save_image(imgs[i], os.path.join(sdir, f"{count}.jpg"))
                 info.append({str(count): clipt_text})
@@ -113,6 +116,9 @@ def parse_args():
                         'patterns as in target_modules, fallback --lora_scale')
     p.add_argument("--lora_start_frac", type=float, default=0.0,
                    help="enable LoRA only after this fraction of denoising steps")
+    p.add_argument("--uncond_legacy_zero", action="store_true",
+                   help="SDXL: zerowe pooled w galezi uncond przy sekwencji NEG (zachowanie sprzed "
+                        "2026-09-07, tylko do odtworzenia wczesniejszych liczb SDXL)")
     p.add_argument("--only_tasks", default=None,
                    help="comma-separated checkpoint indices k to generate (shard the matrix "
                         "across jobs); default: all")
@@ -256,7 +262,8 @@ def main():
                                mask_phrase=(" ".join(x for x in (ident, cls) if x)
                                             if cfg.get("token_mask_lora") else None),
                                lora_start_frac=float(args.lora_start_frac),
-                               sample_batch=int(args.sample_batch))
+                               sample_batch=int(args.sample_batch),
+                               uncond_legacy_zero=bool(args.uncond_legacy_zero))
             print(f"[gen] after_task{k:02d} / {c['concept_id']} ({cat}, '{gen_repl}'): {nimg} imgs",
                   flush=True)
     print(f"[gen] DONE -> {out_root}", flush=True)

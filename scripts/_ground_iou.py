@@ -312,7 +312,7 @@ for kap, sched, conf in GRID:
         # odbieraja zewnetrzu ramki dostep do tekstu.
         txt = clip.txt_feats([prompt])          # juz znormalizowane
         ch, pooled, _ = bundle.encode_text([prompt])
-        uh, _, _ = bundle.encode_text([""])
+        uh, up, _ = bundle.encode_text([""])   # SDXL: pooled uncond spojny z sekwencja
         tm = token_span_mask(bundle.tokenizer, [prompt], cls).cuda() if cfg.get("token_mask_lora") else None
         st = dict.fromkeys(KEYS, 0.0)
         paths, gcol_sum, gcol_n = {}, np.zeros(3), 0
@@ -333,7 +333,7 @@ for kap, sched, conf in GRID:
             gb = torch.Generator(device="cuda").manual_seed(a.seed0 + i_seed)
             scaf = ddim_sample(bundle, manager, chb, uh, pooledb,
                                num_inference_steps=a.scaffold_steps, guidance_scale=7.5,
-                               generator=gb, task_idx=j, token_mask=None)[0]
+                               generator=gb, task_idx=j, token_mask=None, uncond_pooled=up)[0]
             manager.lora_scale, manager.cond_box, manager.ground_gain_base = keep
             scaffold[i_seed] = bundle.encode_images(scaf.unsqueeze(0) * 2 - 1)
             if i_seed == 0:
@@ -353,7 +353,7 @@ for kap, sched, conf in GRID:
                 g = torch.Generator(device="cuda").manual_seed(a.seed0 + i)
                 img = ddim_sample(bundle, manager, ch, uh, pooled, num_inference_steps=a.steps,
                                   guidance_scale=7.5, generator=g, task_idx=j, token_mask=tm,
-                                  bootstrap_steps=a.bootstrap,
+                                  uncond_pooled=up, bootstrap_steps=a.bootstrap,
                                   bootstrap_bg=(scaffold_latent(i) if a.scaffold_steps
                                                 else (bg_latent(j * 97 + i) if a.bootstrap
                                                       else None)))[0]
@@ -395,7 +395,8 @@ for kap, sched, conf in GRID:
                     g2 = torch.Generator(device="cuda").manual_seed(a.seed0 + i)
                     ref_img = ddim_sample(bundle, manager, ch, uh, pooled,
                                           num_inference_steps=a.steps, guidance_scale=7.5,
-                                          generator=g2, task_idx=j, token_mask=tm)[0]
+                                          generator=g2, task_idx=j, token_mask=tm,
+                                          uncond_pooled=up)[0]
                     manager.cond_box, manager.ground_confine = keep
                     _, rmask, _ = detect(ref_img, to_pil(ref_img),
                                          HINT.get(c["concept_id"]), ref)

@@ -2,7 +2,7 @@
 
 > Żywy dokument-pamięć projektu: syntetyczny obraz "gdzie jesteśmy i skąd to wiemy".
 > Aktualizowany po każdym domknięciu wątku (werdykt, faza, decyzja ramowa).
-> Szczegółowy dziennik pomiarów i odrzuceń: `assets/STATUS.md`. Stan na: **2026-08-31**.
+> Szczegółowy dziennik pomiarów i odrzuceń: `assets/STATUS.md`. Stan na: **2026-09-07**.
 
 ---
 
@@ -51,7 +51,10 @@ Trening: segmentowana wklejka (isnet, próg 0.15) całego obiektu na ~100 natura
 
 ### SDXL (port 1:1, bez strojenia)
 - **@50, 3 seedy, s0.7: TA 0.7921±0.0091 | IA 0.7988±0.0050 | DINO 0.6262±0.0076** —
-  **parytet** z opublikowanym CIDM-SDXL (0.795/0.800) na ich protokole. (Kod CIDM-SDXL nie
+  **parytet** z opublikowanym CIDM-SDXL na ich protokole. UWAGA: ich Table 2 podaje
+  **TA 80.0 / IA 79.5** (wcześniej mieliśmy tu te liczby zamienione). Wobec tego jesteśmy
+  −0.79 TA i +0.38 IA, czyli remis bez dominacji. **To checkpoint BEZ groundingu** —
+  wersja z groundingiem jest niżej, patrz §4. (Kod CIDM-SDXL nie
   istnieje publicznie — repo/branche/PR-y/fork współautora sprawdzone; wiersz = liczby z pracy.)
 - **Forgetting: DINO +0.0012, CLIP-I +0.0019** (pełna macierz; grid: `assets/figures/fgt_grid_F_sdxl.jpg`).
 - Liga CL na SDXL (nasz harness, @10): najlepszy baseline LwF DINO 0.519 vs nasze 0.634 —
@@ -453,6 +456,302 @@ czyta się jako porażkę metody, a jest granicą zestawu. To jest też argument
 polerowanie tożsamości na CIFC jest bezcelowe i różnicowanie musi iść przez forgetting,
 skalowanie pamięci i sterowalność.
 
+### Zapominanie z groundingiem: sprzężenie, nie usterka (2026-09-02/03)
+
+Forgetting mierzony pełną macierzą 55 komórek, checkpoint z groundingiem:
+
+| skala | ziarno 2024 | 2025 | 2026 |
+|---|---|---|---|
+| 0.5 | 0.0084 | −0.0017 | 0.0136 |
+| 0.7 | 0.0100 | 0.0019 | — |
+| 0.8 | 0.0151 | 0.0039 | — |
+
+**Rośnie monotonicznie ze skalą w obu ziarnach.** W punkcie pracy s=0.5 na trzech ziarnach
+wychodzi **0.0068 ± 0.0078**, czyli nieodróżnialne od zera; sprzed groundingu było 0.0015.
+Twierdzenia „o rząd niżej od baseline'ów" nie da się obronić — CIDM ma 0.0174, LwF 0.0183.
+
+**Gałąź groundingu niesie tożsamość, a nie tylko adresowanie.** Wyłączenie jej na inferencji
+(`--ground_gain 0`) sprowadza forgetting z 0.0151 do 0.0014, ale kosztuje **8.2 IA i 11.1 DINO**
+i ląduje 5.6 punktu PONIŻEJ naszej krzywej — czyli gorzej niż samo obniżenie skali.
+
+**Rodzina kotwic — monotoniczna wymiana** (s=0.8, IA wobec krzywej przy zrównanym TA):
+
+| wariant | forgetting | ΔIA wobec krzywej |
+|---|---|---|
+| bez kotwicy (2 ziarna) | 0.0095 | — |
+| kotwica na tokeny | 0.0075 | −0.29 |
+| kotwica + bramki | 0.0009 | −2.77 |
+| gałąź wyłączona | 0.0014 | −5.6 |
+
+Im mocniej przypinamy gałąź, tym mniej zapominania i tym mniej tożsamości. **Wkład gałęzi w
+tożsamość i jej wkład w zapominanie to ta sama rzecz.** Decyzja: nie ograniczać gałęzi,
+raportować forgetting w punkcie pracy i opisać sprzężenie jako własność metody.
+
+Dryf mierzony deterministycznie z checkpointów (`scripts/_ground_drift.py`): `ground_head`
+przemieszcza się o 3.34 własnej normy przez strumień, amplituda bramek z 0.011 na 0.0395.
+Kotwica to dusi (3.34 → 0.15), ale **wzrost bramek to uczenie się, nie dryf** — zamrożenie ich
+kaleczy gałąź. Uwaga metodologiczna: `regG≈0` przy WŁĄCZONEJ kotwicy nie dowodzi braku dryfu,
+bo kotwica i brak dryfu wyglądają identycznie; stąd pomiar z checkpointów.
+
+### Bank wycinków miał ucięte obiekty — NAPRAWIONE (2026-09-06)
+
+Na siatkach SDXL dwie z czterech próbek psa miały **odcięty fragment obiektu zawieszony w
+kadrze**. Trzy hipotezy odpadły po pomiarze (maski nie są prostokątne, alfa jest binarna bez
+mgławicy, ramka nie wycieka do sweepu diagnostycznego). Przyczyna: **3 z 5 wycinków `cifc_dog`
+jest przeciętych granicą cropu** (alfa na dolnej krawędzi 0.88 i 0.49, na prawej 0.40), przy
+0–1 z 5 dla pozostałych konceptów. Wklejony w losowe miejsce daje obiekt ucięty płaską linią.
+
+Dwie poprawki, obie domyślnie wyłączone:
+- **`training.paste_flush`** — wycinek ucięty na krawędzi jest dosuwany tą krawędzią do brzegu
+  kadru. Krawędzie liczone PRZED erozją alfy (erozja to min-pool z zerowym paddingiem, po niej
+  każda krawędź wygląda na przezroczystą).
+- **ramka per próbka** — `set_ground` przyjmuje listę ramek; tokeny `[B,M,D]`, FiLM `[B,128]`,
+  `geo_inside` → `[B,n,1]`, maska przez `repeat_interleave(heads)` (head_to_batch_dim jest
+  b-major). Ścieżka jednoramkowa bitowo identyczna. **Dotąd druga próbka w partii dostawała
+  ramkę o rozmiarze pierwszej, a obiekt wklejony we własnej skali — na ~25% wszystkich kroków
+  nadzór umiejscowienia był jawnie niezgodny z obrazem.**
+
+Efekt, ten sam instrument i te same flagi, checkpointy finalne:
+
+| | przed | po |
+|---|---|---|
+| IoU > 0.5 | 43% | **83%** |
+| zawarcie | 0.64 | **0.83** |
+| wypełnienie | 1.56 | **1.30** |
+| IoU | 0.466 | **0.669** |
+| TA (instrument) | 0.7203 | 0.7067 |
+| DINO na wycinku | 0.7277 | 0.7190 |
+
+Najmocniejsza pojedyncza poprawa kontroli przestrzennej w projekcie. Koszt: −0.014 TA i
+−0.009 DINO na wycinku (na granicy rozdzielczości 0.0091). Jedno ziarno — do pracy potrzebne drugie.
+
+### Protokół CIDM: co naprawdę robią (2026-09-03)
+
+Z ich configów (`data/CIFC/options/cidm/task_*.yml`) i źródła Mix-of-Show:
+- **800 kroków**, `batch_size_per_gpu: 1` na dwóch GPU = efektywnie 2, **tyle co u nas**.
+  Nasze headline'owe SD-1.5 ma 400 — czyli **połowę ich budżetu**.
+- **`manual_seed: 0` we wszystkich dziesięciu configach** — każda ich liczba, także dla
+  baseline'ów, jest z jednego ziarna.
+- Augmentacje: `HumanResizeCropFinalV3` (letterbox z maską straty), `ShuffleCaption`
+  (u nas no-op: 54 z 55 podpisów bez przecinka), `EnhanceText` (27 szablonów obiektowych).
+  **Nasze headline'owe configi nie mają żadnej augmentacji obrazu.**
+- Pojemność per koncept większa niż sądziliśmy: **osobne embeddingi tekstowe per warstwa**
+  transformera i LoRA na CAŁEJ uwadze (`where: Attention`), gdy my owijamy tylko `attn2`.
+
+### SDXL: budżet, nie podział danych (2026-09-03/04)
+
+Grounding kosztował na SDXL 3.1 TA i stawiał nas pod CIDM. Dwa warianty rozdzieliły przyczyny:
+- `box_aug_p 0.25` (więcej kroków rekonstrukcji przy stałym budżecie): **null**.
+- **800 kroków: +2.1 IA przy zrównanym TA**; z augmentacją obrazu **+3.35**.
+
+Na SD-1.5 to samo podwojenie daje +0.07 i +0.75 IA, czyli praktycznie nic — spójne z
+sufitem danych. SDXL ma 87.5 M parametrów hipersieci wobec 21.1 M i po prostu nie domykał się
+w 400 krokach.
+
+**Stan wobec CIDM (2026-09-06):**
+
+| | ich TA/IA | nasze przy ich TA |
+|---|---|---|
+| SD-1.5 | 74.8 / 78.0 | **80.19** (+2.19), a przy s=0.5 bijemy na obu osiach naraz |
+| SDXL, 2 ziarna `800aug` | 80.0 / 79.5 | 78.94 (**−0.56**) |
+
+Rozrzut ziaren na SDXL to 1.20 IA, więc dwa ziarna to minimum. W toku: 1600 kroków
+(`box_aug_p 0.5` znaczy, że nasze 800 to 400 kroków na koncepcie wobec ich 800 — 1600
+zrównuje tę wielkość) plus obie poprawki wklejania, sześć skal.
+
+### Negatywy z tej fali (wszystkie tanie, wszystkie zamknięte)
+
+- **`boxonly`** (gałąź milczy bez ramki): tor LoRA nie przejmuje tożsamości. DINO 53.57 przy
+  400 krokach i 54.95 przy 800, wobec 62.30 dla F_base — a `g0b` na normalnym checkpointcie
+  daje 53.88. Przyczyną nie jest budżet: F_base ma te same 400 kroków na zdjęciach.
+- **`paste_scale_full_p 0.3`** (drugi tryb skali przy 0.9–1.0): **−2.4 IA** przy zrównanym TA.
+- **`proto`** (27 szablonów + podpis kompozytu z prawdziwego tła): TA −4.2 przy tej samej
+  skali, 0.47 IA poniżej krzywej. **SPROSTOWANIE 2026-09-06:** przyczyną był BŁĄD w
+  `prompt_aug` (stosowany po `encode_text`, patrz przegląd kodu niżej), nie `paste_caption`.
+  Oba zostały potem zmierzone osobno na naprawionym kodzie — patrz „Układ 2×2".
+- **Kotwice na gałąź**: patrz tabela wyżej — działają, ale płacą tożsamością.
+
+### Przegląd kodu — trzy błędy, jeden ciężki (2026-09-06)
+
+Przegląd na prośbę, bez awarii jako powodu. Znalezione i naprawione:
+1. **`prompt_aug` po `encode_text`** (`2e50858`) — cichy i ciężki. UNet dostawał podpis BEZ
+   szablonu (flaga martwa), a `token_span_mask` liczył się na łańcuchu z szablonem, przesuniętym
+   o ~4 tokeny — **LoRA trafiała w złe pozycje tokenów przez cały trening**. Dotyczył tylko
+   przebiegów z tą flagą (`proto`, dwa anulowane). Żaden raportowany wynik nie był dotknięty.
+2. **`ddim_sample` zostawiał zmutowane `manager.ground_gain`** (`4baf4ab`) — trening czyta ten
+   atrybut i mnoży przez niego wstrzyknięcie GSA. Bezobjawowe tylko przez domyślne
+   `ground_sched_frac=1.0`. Teraz przywracane po samplingu.
+3. **Kara konfinująca niegotowa na ramkę per próbka** (`2da92f9`) — `geo_inside` zwraca `[B,n,1]`
+   przy liście ramek; ścieżka `ground_confine` zakładała `[n,1]`. Głośny błąd, nieaktywny w
+   naszych configach.
+
+Zgłoszone, nienaprawione (martwe ścieżki): `geo_logit`, `_ground_boxvec`, `box_emb` nie są
+listowo-świadome (`ground_geo*`, `box_cond` wyłączone); `if False` w `set_ground` sprzed zmian.
+Sprawdzone i czyste: blok wklejania, kolejność ramka→`set_ground`→forward, wzór na forgetting,
+`--final_only` → forgetting 0 z konstrukcji, indeksowanie zadań w macierzy, seedowanie.
+
+**Lekcja infrastrukturalna:** `run.sh` robi `git pull` przy WYSŁANIU, a job czyta drzewo klonu
+przy STARCIE. Push między wysłaniem a startem zmienia kod czekającego zadania, a `run-info.txt`
+zapisuje stary commit. Raz anulowaliśmy i wysłaliśmy ponownie z tego powodu (21925099 → 21926692).
+
+### Transfer w przód umiejscowienia — NOWY WYNIK POZYTYWNY (2026-09-07)
+
+Instrument umiejscowienia na checkpointach `P_ground_gsa_erode` po zadaniu 0, 4 i 9, koncept 0
+(pies), te same flagi (κ=2, sched 0.3, bootstrap 10, rusztowanie 10, s=0.7, ćwiartki):
+
+| po zadaniu | ćwiartka | IoU | IoU>0.5 | zawarcie | DINO |
+|---|---|---|---|---|---|
+| 0 | 75% | 0.33 | 8% | 0.44 | 0.753 |
+| 4 | 83% | 0.57 | 83% | 0.70 | 0.815 |
+| 9 | 92% | 0.57 | 75% | 0.72 | 0.816 |
+
+**Pierwszy koncept nigdy więcej nie widział własnych danych, a jego umiejscowienie poprawia się
+dzięki temu, co gałąź nauczyła się na dziewięciu innych.** Lustrzane odbicie zapominania; nikt na
+tym benchmarku tego nie raportuje. Konsekwencja: **kotwica na gałąź jest błędem kierunkowym**
+(zamraża stan, w którym pies miał 8%). Przebieg SDXL z kotwicą (22087630) anulowany przed startem.
+
+**Zaprojektowane, niezaimplementowane rozwiązanie napięcia kotwica/transfer:** `gate =
+g_warstwa + h(ramka)` z małym MLP na Fourierze ramki. Wtedy da się kotwiczyć tokeny **i**
+`g + h(pełna klatka)` starych konceptów (wkład bezramkowy), zostawiając `h(inne ramki)` wolne.
+Dziś bramka to jeden skalar na warstwę, więc amplituda pełnoklatkowa i ramkowa są nierozdzielne
+— stąd kotwica na tokeny (dryf uciekł w bramki: Δ 0.0285→0.0589) i na bramki (−2.77 IA,
+zamrożone umiejscowienie). Zysk ograniczony: forgetting w punkcie pracy już ≈0.
+
+### `paste_flush` i ramka per próbka: SD-1.5 za darmo, SDXL płaci (2026-09-06/07)
+
+SD-1.5, eval CIFC `P_ground_flush` wobec `erode` (2 ziarna): **+0.09 / +0.25 IA** przy zrównanym
+TA — skok umiejscowienia 43%→83% nie kosztował nic.
+
+SDXL, `X_sdxl_best` (= `800aug` + flush + per próbka) wobec `800aug`: **−1.70 do −2.03 IA** przy
+zrównanym TA; przy ich TA 80.0 → 77.69 (−1.81) wobec 78.94 (−0.56) dla `800aug`. Przy tej samej
+skali IA stoi (−0.23), a **TA spada o 3.1** (7 z 10 konceptów, ~3σ). Atrybucja per koncept
+niemożliwa: różnice `best`/`800aug` per koncept (śr. |ΔIA| 2.24, |ΔTA| 3.52) są tej wielkości
+co szum między ziarnami `800aug` (2.14, 3.11); `painting` ma −8.3 TA w `best` i +8.4 w drugim
+ziarnie. **Liczby per koncept na SDXL wymagają ≥3 ziaren.**
+
+Mechanizm (pomiar parametrów, `scripts/_ground_drift.py`, jobs 22087531/32):
+
+| | `800aug` | `best` |
+|---|---|---|
+| dryf `ground_head` | 8.15× | **17.74×** |
+| bramki absmax koniec | 0.0672 | **0.0856** |
+
+Ramka per próbka wytrenowała gałąź mocniej, a **wstrzyknięcie GSA nie jest skalowane przez
+`s_lora`** (`regional.py`: `κ·tanh(gate)·inside·read`) — więc ciągnie TA w dół na całej krzywej
+i skalą LoRA nie da się tego oddać. Test κ=0.5/0.7 na inferencji: **22087569/70** (w kolejce).
+Instrument umiejscowienia na SDXL: **22094511** (pierwszy raz; poprzedni 22087510 padł, bo sondy
+ładowały SD-1.5 na sztywno — naprawione `7dcdf96`). Bez niego nie wiadomo, czy za −2 IA cokolwiek
+kupujemy; jeśli nie — na SDXL `flush` wyłączyć i wrócić do −0.56.
+
+**Zmiana architektoniczna, która z tego wynika (niezaimplementowana):** mnożyć wstrzyknięcie gałęzi
+także przez `lora_scale`, żeby oba tory adaptera słabły razem — jedno pokrętło zamiast dwu.
+
+### Układ 2×2 na naprawionym kodzie (2026-09-07)
+
+Kontrola `P_best` = `erode` + augment + flush + per próbka (400 kroków). Krzywa: s=0.4
+(75.80/79.30), **0.45 (75.13/79.95)**, 0.5 (74.61/80.39), 0.6 (73.57/81.23), 0.7 (72.66/81.81),
+0.8 (71.78/81.85). **Sufit IA na SD-1.5 ≈ 81.85** — dalsze wzmacnianie nic nie daje.
+**Przy s=0.45 bijemy CIDM na obu osiach**, przy ich TA 74.8 → IA **80.23 (+2.23)**.
+
+| flaga (SD-1.5, wobec `P_best`, zrównane TA) | ΔIA | werdykt |
+|---|---|---|
+| `prompt_aug` (`P_best_pa`) | +0.07 | neutralny |
+| `paste_caption` (`P_best_pc`) | +0.11 | neutralny; zostawić dla poprawności podpisów |
+| `prompt_aug` na SDXL (`X_sdxl_best_pa`) | **−1.40** (dwa punkty) | **odrzucony** |
+
+`800aug` na SD-1.5 (augmentacja obrazu na 800 krokach): kasuje ślizg z 800, netto ≈0.
+`X_sdxl_1600` (1600 + aug + flush + per próbka): przy ich TA → 78.01 (−1.49); +0.32 nad 800 —
+**nasyca się, nie ratuje**.
+
+### Współdzielone głowice pod groundingiem (2026-09-07, w toku)
+
+Faza C (`configs/phaseC/`, wyniki na Athenie `outputs/phaseC/`, 52 evale, BEZ groundingu)
+porównywała warianty WEWNĄTRZ rodziny `share_heads` — `C_cap_base` sam ma `share_heads: true`.
+Headline z groundingiem tej flagi nie ustawia → 64 niezależne głowice, 21.1 M. Z fazy C przy
+zrównanym TA wobec `C_cap_base`: `C_cap_role` **+0.57/+1.20**, `C_share_nomask_nonorm`
++0.47/+0.66/+1.31, `C_share` (z `preserve_norm: true`) −0.3/−0.4 i załamanie przy s=1.0 →
+**`preserve_norm` szkodzi współdzieleniu**. Szerokość: 50 −0.31, 100 → 0, 200 +0.65, 400 +0.64
+(nasycenie ~200). `P_best_share` (= `P_best` + `head_hidden 100, share_heads, share_by_role`):
+trening 22087727 zakończony, evale 22087728/30/33 i instrument 22087736 w kolejce. Policzyć
+parametry z checkpointu. **Ryzyko:** obciążenie głowicy = T·(warstwy kształtu) → wcześniejsze
+nasycenie przy dużym T; sweep T=35 (CustomConcept101 jest na klastrze: `data/benchmark_dataset`,
+101 konceptów) powinien iść na OBU architekturach.
+
+### SDXL: diagnoza w całości (2026-09-07)
+
+Dwa problemy, nie jeden:
+- **A. Baza bez zapasu.** SD-1.5 baza jest +2.5 IA nad CIDM przy ich TA, SDXL baza w remisie
+  (−0.79 TA / +0.38 IA, ale mierzona przy 400 krokach). CIDM zyskał na SDXL 5.2 TA, my 3.7 —
+  hipoteza: adaptacja po stronie tekstu (ich embeddingi per warstwa; nasz enkoder zamrożony).
+  **Baza SDXL@800 bez groundingu nigdy nie mierzona** → `X_sdxl_base800` **22095781**, evale
+  22095788/99/806 (s=0.4/0.5/0.7). To rozstrzyga, czy sufit tekstowy istnieje.
+- **B. Podatek groundingu 10× większy niż na SD-1.5** (2–3 IA wobec 0.3): gałąź mocniejsza i
+  nieskalowana przez `s_lora` (wyżej); **wycinki powiększane przy 1024²** (500–850 px wobec celu
+  460–870 → do 1.7×, rozmyty obiekt na połowie kroków; przy 512² zawsze zmniejszane) →
+  `paste_no_upscale` (`5ceb9e7`, `r = min(r, 1.0)`, no-op na SD-1.5) → `X_sdxl_best_nu`
+  **22095463**, evale 22095464/65/71. Predykcja: odzyska głównie DINO.
+- **C. Statystyka:** ich liczby z jednego ziarna; nasz rozrzut 1.20 IA na dwu. Brakujące 0.56
+  mieści się w jednym odchyleniu.
+
+**Adaptacja tekstu, jeśli sufit się potwierdzi:** Option C (`learned_tokens.enabled`, cały wiersz
+uczony, `init_from_class`, routing przez `key_prompt: index` — klucz ortogonalny NIETKNIĘTY), a
+NIE `R_tail`/`ortho_tokens`, bo tam klucz siedzi w pierwszych 128 wymiarach wiersza embeddingu i
+jest szumem dla enkodera. `R_tail` dał +0.011 DINO na 2 ziarnach (SD-1.5). **Obie ścieżki są
+SD-1.5-only** — `tokens.py` nie zna `text_encoder_2`/`tokenizer_2`; SDXL wymaga rejestracji i
+treningu w obu enkoderach. O(T) pamięci (768+1280 floatów/koncept) — jawnie policzyć w pracy.
+
+### Przegląd kodu toru SDXL — trzy odstępstwa, żadne na SD-1.5 (2026-09-07, wieczór)
+
+Przegląd na pytanie „czy gorsze wyniki SDXL to bug". Sprawdzone i czyste: `encode_text` SDXL
+(penultimate layers obu enkoderów, pooled z TE2 — jak pipeline), ramka per próbka i
+`repeat_interleave` (b-major zgodne z `head_to_batch_dim`), maska tokenowa między tokenizerami
+(wspólne BPE), `ground_tok_dim`=1280, bank teł 1024², scheduler z configu SDXL, VAE fp32,
+preprocessing metryk. Trzy rzeczy są SDXL-specyficzne i niezamierzone — **naprawione, jeszcze
+niezmierzone**:
+
+1. **Gałąź uncond w CFG była niespójna** (`sampling.py`, `gen_cifc.py`): sekwencja = zakodowany
+   prompt negatywny (`NEG`), pooled `text_embeds` = zera. Pipeline SDXL zeruje OBA naraz (i tylko
+   przy pustym negatywie); przy podanym negatywie oba pochodzą z enkoderów. Model nigdy nie widział
+   kombinacji (NEG, 0), a błąd uncond mnoży się w CFG przez (1−7.5). Dotyczy KAŻDEJ liczby SDXL
+   (baza, grounding, baseline'y) — kandydat na problem A („baza bez zapasu"). Fix: pooled
+   negatywu idzie do `added_cond` uncond (`uncond_pooled` w `ddim_sample`; `gen_cifc`, `_gen_one`,
+   `infer`, `_ground_iou`). Stare zachowanie: `gen_cifc --uncond_legacy_zero`. **Inference-only** →
+   izolowalne na istniejącym checkpoincie.
+2. **`GroundedAttnProcessor` liczył logity uwagi w bf16** (`baddbmm` w `q.dtype`), gdy domyślny
+   SDPA trzyma QK^T i softmax w fp32 (`upcast_attention: null` w UNecie SDXL nic tu nie zmienia).
+   Ulp bf16 przy |logit|≈8 to 0.0625 → ~3% błędu wag uwagi na wszystkich 70 attn2 przez cały
+   trening bf16. Baza (bez `ground_cond`) trenuje przez SDPA → „podatek groundingu" na SDXL był
+   zmieszany z numeryką kernela; na SD-1.5 trening jest fp32, więc różnicy nie było (podatek 0.3).
+   Fix: logity w fp32. Zmienia numerykę eval fp16 także na SD-1.5 z groundingiem (w granicach
+   szumu; headline `P_best` liczony przed zmianą).
+3. **Mikro-warunkowanie SDXL w treningu było stałe** `(1024,1024,0,0,1024,1024)` dla KAŻDEGO
+   obrazu. Źródła: `dog` 687–781 px, `ink_painting` 512 px, `drawing` 645–910 px, plus crop
+   80–100% z `augment` → powiększane 1.3–2× i deklarowane jako natywne, nieprzycięte 1024.
+   `original_size` w SDXL istnieje dokładnie po to, by model nie kojarzył rozmycia z natywną
+   rozdzielczością (Podell et al. §2.2; `train_dreambooth_lora_sdxl.py` podaje prawdziwe wartości).
+   Fix: `data._load_image` zwraca rozmiar źródła i offset cropu (w układzie po przeskalowaniu),
+   `added_cond(orig_size, crop)`; kompozyt na tle 1024 = (1024,1024,0,0). Baseline'y SDXL
+   (`train_baselines`, `train_l2dm`) NIE zmienione — używają stałych jak dotąd.
+
+Poza tym: `guidance_scale 7.5` na SDXL (pipeline domyślnie 5.0) — protokół, do sweepu
+inference-only; eval fp16 po treningu bf16 — niespójność bez znanego skutku; `grad_clip 1.0` na
+normie globalnej przy 87.5 M parametrów tnie częściej niż przy 21 M → trening loguje teraz normę
+PRZED klipem (`gnorm`, W&B `grad_norm`). Metryki @224 px słabo widzą rozmycie z (3), więc jego
+wpływ na IA jest niepewny; (1) i (2) mają mechanizm działający wprost na IA/TA.
+
+**Plan pomiaru (rozłącznie):** (a) `X_sdxl_ground_800aug` @s=0.4/0.5/0.6 z nową gałęzią uncond
+na istniejącym checkpoincie → efekt samego (1) wobec `eval10f`; (b) retrening `X_sdxl_base800`
+(dotknięty tylko (3)) i `X_sdxl_best_nu` ((2)+(3)+`paste_no_upscale`) na naprawionym kodzie —
+kolejka z 2026-09-07 anulowana przed startem, bo `run.sh` pulluje przy wysyłce, a job czyta drzewo
+przy starcie, więc push zmieniłby kod czekających zadań pod starym `run-info.txt`.
+
+**Stan wobec CIDM (2026-09-07):**
+
+| | config | wobec CIDM przy ich TA |
+|---|---|---|
+| SD-1.5 | `P_best` s=0.45 | **+2.23 IA**, dominacja na obu osiach |
+| SDXL | `800aug` (bez flush) | −0.56 IA (2 ziarna, rozrzut 1.20) |
+
 ## 5. Pozostałe wyniki analityczne (do artykułu)
 
 - **Lekcje maskowania nie przenoszą się między backbone'ami**: nomask +0.019 DINO na SD-1.5,
@@ -469,14 +768,36 @@ skalowanie pamięci i sterowalność.
 
 ## 6. W toku / otwarte
 
-- **Helios, 2026-08-31:** trening `P_ground_gsa_nocap` (21592961) + sondy IoU/confine
-  (21597878) i ablacja rozdzielczości (21597884). Czekają decyzje: drugi seed GSA,
-  kompozycja wielokonceptowa, κ per koncept, retrening κ-losowany.
-- L2DM na SDXL: OOM (A100 40GB) — opcje: gradient checkpointing / batch 1+akum. / liga 4-metodowa.
-- Parked: test szybkości adaptacji (warm-start control, ~5 GPU-h); R_tail "obiecujące,
-  niepotwierdzone" (+0.011, 2 seedy, brak trzeciego); sweep h @T=35 (warunek tezy O(1));
-  kompozycja wielokonceptowa na GSA (cel ramek); tabele @50 refresh (`scripts/make_tables.py`,
-  fix: ours-Fgt z pełnej macierzy).
+**W kolejce (Helios, 2026-09-07) — każde rozstrzyga jedno pytanie:**
+- `P_best_share` evale 22087728/30/33 + instrument 22087736 — współdzielone głowice pod groundingiem
+  (SD-1.5; jedyne zadania z kolejki sprzed przeglądu SDXL, które zostają).
+- **Po przeglądzie SDXL (do wysłania po pushu):** (a) `X_sdxl_ground_800aug` eval @s=0.4/0.5/0.6
+  z poprawioną gałęzią uncond — efekt samej poprawki (1) na istniejącym checkpoincie; (b) retrening
+  `X_sdxl_base800` (**czy sufit tekstowy istnieje** — baza bez groundingu przy 800, teraz z
+  poprawnym mikro-warunkowaniem) i `X_sdxl_best_nu` (grounding z fp32 logitami + `paste_no_upscale`)
+  + evale; (c) potem instrument umiejscowienia SDXL na nowym `best_nu` i κ=0.5/0.7 — anulowane
+  wersje 22094511 / 22087569/70 liczyły stary checkpoint. `X_sdxl_1600` evale 22077405/07 anulowane
+  (wynik znany, −1.49; 1600 nasyca się).
+
+**Do zrobienia przed wysyłką (ścieżka krytyczna to pisanie, nie kolejka):**
+- Drugie ziarno `P_best` + jego pełna macierz forgettingu (tabela forgettingu w pracy jest
+  wciąż z `erode`).
+- Trzecie ziarno SDXL wybranego przepisu — bez tego żadne zdanie o SDXL nie ma wagi.
+- Abstract, Introduction, Related work, Limitations, Conclusion — puste `\todo{}`.
+- Transfer w przód — zmierzony, **ani zdania w tekście**.
+- `REPORT.md` → `git commit` (nie commitowany od 2026-09-06).
+
+**Następna wersja (nie ta):** sweep T=35 na CustomConcept101 na obu architekturach; bramka
+`g + h(ramka)` i kotwica wkładu bezramkowego; skalowanie gałęzi przez `s_lora`; Option C
+dwuenkoderowe na SDXL; letterbox z bboxem przez korelację wzorca; L2DM na SDXL (OOM); kompozycja
+wielokonceptowa (ITP/RTP); `R_tail` trzecie ziarno na SD-1.5.
+
+**Nie robić (zmierzone albo rozstrzygnięte):** kotwica na gałąź (zamraża transfer w przód);
+`prompt_aug` (−1.40 IA na SDXL); `paste_scale_full_p` (−2.4 IA); `boxonly` (LoRA nie przejmuje
+tożsamości: 53.6/55.0 wobec 62.3); 1600 kroków (nasyca się); tokeny groundingu bez klucza
+(= GLIGEN bez semantyki, claim (ii) upada); rozdzielanie tożsamości od umiejscowienia przez
+wejście gałęzi (wyciek bierze się z sygnału treningowego, nie z wejścia); podnoszenie rangi /
+szerokości głowicy per warstwa; gonienie wypełnienia kadru pod metrykę.
 
 ## 7. Infrastruktura (twarde lekcje)
 
