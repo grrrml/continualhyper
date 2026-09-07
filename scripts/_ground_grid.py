@@ -36,7 +36,15 @@ if _a.quads:
     N = 1
 
 cfg = load_config(CFGP)
-bundle = load_sd(device="cuda", dtype=torch.float16)
+# loader z configu, jak w gen_cifc: na sztywno SD-1.5 padalo na checkpointach SDXL
+# (64 warstwy / tokeny 768 wobec 280 / 1280) -- umiejscowienia na SDXL nie dalo
+# sie przez to zmierzyc.
+_mid = cfg.get("sd_model_id", "")
+if "xl" in str(_mid).lower():
+    from src.sd_loader import load_sdxl
+    bundle = load_sdxl(model_id=_mid, device="cuda", dtype=torch.float16)
+else:
+    bundle = load_sd(device="cuda", dtype=torch.float16)
 manager = build_hyper(bundle, target_modules=tuple(cfg.get("target_modules", DEFAULT_TARGETS)),
                       n_tasks=len(cfg["concepts"]), task_cond=cfg.get("task_cond"),
                       **cfg.get("hyper", {}))

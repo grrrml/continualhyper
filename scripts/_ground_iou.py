@@ -111,7 +111,15 @@ HINT = {"cifc_dog": ("dog",), "cifc_dog2": ("dog",), "cifc_cat": ("cat",),
         "cifc_teddybear": ("teddy bear",), "cifc_duck_toy": ("bird", "teddy bear")}
 
 cfg = load_config(a.config)
-bundle = load_sd(device="cuda", dtype=torch.float16)
+# loader z configu, jak w gen_cifc: na sztywno SD-1.5 padalo na checkpointach SDXL
+# (64 warstwy / tokeny 768 wobec 280 / 1280) -- umiejscowienia na SDXL nie dalo
+# sie przez to zmierzyc.
+_mid = cfg.get("sd_model_id", "")
+if "xl" in str(_mid).lower():
+    from src.sd_loader import load_sdxl
+    bundle = load_sdxl(model_id=_mid, device="cuda", dtype=torch.float16)
+else:
+    bundle = load_sd(device="cuda", dtype=torch.float16)
 manager = build_hyper(bundle, target_modules=tuple(cfg.get("target_modules", DEFAULT_TARGETS)),
                       n_tasks=len(cfg["concepts"]), task_cond=cfg.get("task_cond"),
                       **cfg.get("hyper", {}))
@@ -154,7 +162,7 @@ def bg_latent(idx):
     jest wlasnie tym artefaktem, ktory probujemy usunac, wiec bierzemy realna scene."""
     if not BGS:
         return None
-    im = Image.open(BGS[idx % len(BGS)]).convert("RGB").resize((512, 512), Image.BICUBIC)
+    im = Image.open(BGS[idx % len(BGS)]).convert("RGB").resize((int(getattr(bundle, "default_resolution", 512)),) * 2, Image.BICUBIC)
     t = torch.from_numpy(np.asarray(im, dtype=np.float32) / 127.5 - 1.0)
     t = t.permute(2, 0, 1).unsqueeze(0).to("cuda", torch.float16)
     return bundle.encode_images(t)
