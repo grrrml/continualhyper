@@ -179,6 +179,7 @@ def main():
     # Wycinek przeciety granica cropu dosuwamy ta krawedzia do brzegu kadru.
     # Domyslnie wylaczone, zeby dotychczasowe przebiegi sie odtwarzaly.
     paste_flush = float(cfg.get("training", {}).get("paste_flush", 0.0))
+    paste_no_upscale = bool(cfg.get("training", {}).get("paste_no_upscale", False))
     prompt_aug = bool(cfg.get("training", {}).get("prompt_aug", False))
     paste_caption = bool(cfg.get("training", {}).get("paste_caption", False))
     # segmentowana wklejka (objective v2): caly wyciety obiekt (RGBA) na naturalne tlo,
@@ -351,6 +352,11 @@ def main():
                         ch, cw = rgb.shape[-2:]
                         sc = _paste_scale(paste_lo, paste_hi, paste_full_p)
                         r = sc * H / max(ch, cw)
+                        if paste_no_upscale:
+                            # wycinki maja 500-850 px; przy 1024^2 i skali 0.45-0.85 bylyby
+                            # powiekszane do 1.7x, wiec polowa krokow uczylaby rozmytego
+                            # obiektu. Na SD-1.5 (cel 230-435 px) to no-op.
+                            r = min(r, 1.0)
                         nh, nw = max(8, int(ch * r)), max(8, int(cw * r))
                         rgb = Fnn.interpolate(rgb[None], size=(nh, nw), mode="bilinear",
                                               align_corners=False)[0]
