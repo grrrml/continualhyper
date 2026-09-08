@@ -116,6 +116,8 @@ def parse_args():
                         'patterns as in target_modules, fallback --lora_scale')
     p.add_argument("--lora_start_frac", type=float, default=0.0,
                    help="enable LoRA only after this fraction of denoising steps")
+    p.add_argument("--ground_scale_with_lora", action="store_true",
+                   help="wstrzyk GSA mnozony przez --lora_scale (oba tory adaptera slabna razem)")
     p.add_argument("--uncond_legacy_zero", action="store_true",
                    help="SDXL: zerowe pooled w galezi uncond przy sekwencji NEG (zachowanie sprzed "
                         "2026-09-07, tylko do odtworzenia wczesniejszych liczb SDXL)")
@@ -187,6 +189,9 @@ def main():
             manager.ground_gain_base = float(args.ground_gain)
             manager.ground_gain = float(args.ground_gain)
             print(f"[gen] ground_gain_base={manager.ground_gain_base}", flush=True)
+        if args.ground_scale_with_lora:
+            manager.ground_scale_with_lora = True
+            print("[gen] GSA injection scaled by lora_scale", flush=True)
     manager.eval()
     if getattr(manager, "scale_cond", False):
         # scale is an INPUT to the head here, not a multiplier -- multiplying as well would

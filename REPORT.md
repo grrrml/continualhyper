@@ -663,7 +663,7 @@ Kontrola `P_best` = `erode` + augment + flush + per próbka (400 kroków). Krzyw
 `X_sdxl_1600` (1600 + aug + flush + per próbka): przy ich TA → 78.01 (−1.49); +0.32 nad 800 —
 **nasyca się, nie ratuje**.
 
-### Współdzielone głowice pod groundingiem (2026-09-07, w toku)
+### Współdzielone głowice pod groundingiem — ODRZUCONE (2026-09-07)
 
 Faza C (`configs/phaseC/`, wyniki na Athenie `outputs/phaseC/`, 52 evale, BEZ groundingu)
 porównywała warianty WEWNĄTRZ rodziny `share_heads` — `C_cap_base` sam ma `share_heads: true`.
@@ -671,11 +671,25 @@ Headline z groundingiem tej flagi nie ustawia → 64 niezależne głowice, 21.1 
 zrównanym TA wobec `C_cap_base`: `C_cap_role` **+0.57/+1.20**, `C_share_nomask_nonorm`
 +0.47/+0.66/+1.31, `C_share` (z `preserve_norm: true`) −0.3/−0.4 i załamanie przy s=1.0 →
 **`preserve_norm` szkodzi współdzieleniu**. Szerokość: 50 −0.31, 100 → 0, 200 +0.65, 400 +0.64
-(nasycenie ~200). `P_best_share` (= `P_best` + `head_hidden 100, share_heads, share_by_role`):
-trening 22087727 zakończony, evale 22087728/30/33 i instrument 22087736 w kolejce. Policzyć
-parametry z checkpointu. **Ryzyko:** obciążenie głowicy = T·(warstwy kształtu) → wcześniejsze
-nasycenie przy dużym T; sweep T=35 (CustomConcept101 jest na klastrze: `data/benchmark_dataset`,
-101 konceptów) powinien iść na OBU architekturach.
+(nasycenie ~200). `P_best_share` (= `P_best` + `head_hidden 100, share_heads, share_by_role`; trening 22087727,
+evale 22087728/30/33, instrument 22087736) **wobec `P_best`, jedno ziarno:**
+
+| | share | P_best | Δ |
+|---|---|---|---|
+| IA @TA≈75.1 (s=0.45) | 78.32 | 79.95 | **−1.6** |
+| IA @TA≈74.6 (s=0.5) | 78.68 | 80.39 | **−1.7** |
+| IA @TA≈73.6 (s=0.6) | 79.34 | 81.23 | **−1.9** |
+| instrument: IoU>0.5 / IoU | 67% / 0.577 | 83% / 0.669 | −16 pp / −0.09 |
+| zawarcie / wypełnienie | 0.76 / 1.44 | 0.83 / 1.30 | gorzej |
+| DINO wycinek | 0.675 | 0.719 | −0.044 |
+| TA (instrument) | 0.711 | 0.707 | ≈ |
+
+Spójnie na trzech skalach i na umiejscowieniu (placement w granicach szumu 10 pp, ale zgodny
+kierunkiem). **Lekcja z fazy C (+0.57/+1.20) była bez groundingu i nie przenosi się**: gałąź GSA
+sama zjada pojemność sterowania, więc per-warstwowe głowice są potrzebne — trzeci przypadek
+lekcji nieprzenośnej między rodzinami (po `nomask` SD-1.5↔SDXL i `preserve_norm`). `share_heads`
+zostaje wyłącznie jako opcja pamięciowa przy dużym T (sweep T=35, CustomConcept101 jest na
+klastrze: `data/benchmark_dataset`, 101 konceptów), NIE w bieżącej wersji.
 
 ### SDXL: diagnoza w całości (2026-09-07)
 
@@ -739,8 +753,16 @@ normie globalnej przy 87.5 M parametrów tnie częściej niż przy 21 M → tren
 PRZED klipem (`gnorm`, W&B `grad_norm`). Metryki @224 px słabo widzą rozmycie z (3), więc jego
 wpływ na IA jest niepewny; (1) i (2) mają mechanizm działający wprost na IA/TA.
 
-**Plan pomiaru (rozłącznie):** (a) `X_sdxl_ground_800aug` @s=0.4/0.5/0.6 z nową gałęzią uncond
-na istniejącym checkpoincie → efekt samego (1) wobec `eval10f`; (b) retrening `X_sdxl_base800`
+**(1) ZMIERZONE — NULL (2026-09-08, jobs 22132419/23/26).** `X_sdxl_ground_800aug`, ten sam
+checkpoint i ziarna, `eval10f` (stara gałąź) vs `eval10f_uc` (pooled negatywu): s=0.4
+80.15/79.27/59.67 → 80.18/79.13/59.57; s=0.5 77.35/80.92/62.08 → 77.32/80.83/61.93; s=0.6
+75.16/82.09/63.98 → 75.16/81.97/63.82. ΔTA ≤ 0.0003, ΔIA −0.001, ΔDINO −0.0015 — poniżej szumu
+samplingowego, znak minimalnie ujemny. Odstępstwo od pipeline'u było realne, ale model jest na
+nie niewrażliwy: **luka do CIDM na SDXL NIE siedzi w gałęzi uncond.** Poprawka zostaje (zgodność
+z protokołem SDXL), ale nie jest wyjaśnieniem problemu A. `grad_clip` też odpada jako hipoteza:
+`gnorm` w treningach SDXL to 0.003–0.34, klip przy 1.0 nigdy nie działa.
+
+**Plan pomiaru (rozłącznie):** (a) ✓ powyżej; (b) retrening `X_sdxl_base800`
 (dotknięty tylko (3)) i `X_sdxl_best_nu` ((2)+(3)+`paste_no_upscale`) na naprawionym kodzie —
 kolejka z 2026-09-07 anulowana przed startem, bo `run.sh` pulluje przy wysyłce, a job czyta drzewo
 przy starcie, więc push zmieniłby kod czekających zadań pod starym `run-info.txt`.
@@ -769,15 +791,15 @@ przy starcie, więc push zmieniłby kod czekających zadań pod starym `run-info
 ## 6. W toku / otwarte
 
 **W kolejce (Helios, 2026-09-07) — każde rozstrzyga jedno pytanie:**
-- `P_best_share` evale 22087728/30/33 + instrument 22087736 — współdzielone głowice pod groundingiem
-  (SD-1.5; jedyne zadania z kolejki sprzed przeglądu SDXL, które zostają).
-- **Po przeglądzie SDXL (do wysłania po pushu):** (a) `X_sdxl_ground_800aug` eval @s=0.4/0.5/0.6
-  z poprawioną gałęzią uncond — efekt samej poprawki (1) na istniejącym checkpoincie; (b) retrening
-  `X_sdxl_base800` (**czy sufit tekstowy istnieje** — baza bez groundingu przy 800, teraz z
-  poprawnym mikro-warunkowaniem) i `X_sdxl_best_nu` (grounding z fp32 logitami + `paste_no_upscale`)
-  + evale; (c) potem instrument umiejscowienia SDXL na nowym `best_nu` i κ=0.5/0.7 — anulowane
-  wersje 22094511 / 22087569/70 liczyły stary checkpoint. `X_sdxl_1600` evale 22077405/07 anulowane
-  (wynik znany, −1.49; 1600 nasyca się).
+- **Po przeglądzie SDXL (commit `1686063`, wysłane 2026-09-07 wieczór):** (a) **22098594**
+  `X_sdxl_ground_800aug` eval @s=0.4/0.5/0.6 → `eval10f_uc/` z poprawioną gałęzią uncond — efekt
+  samej poprawki (1) wobec istniejącego `eval10f/` (ten sam checkpoint, te same ziarna);
+  (b) retrening **22098601** `X_sdxl_base800` (**czy sufit tekstowy istnieje** — baza bez groundingu
+  przy 800, z poprawnym mikro-warunkowaniem) + evale 22099013/23/27 (s=0.4/0.5/0.7) i **22098605**
+  `X_sdxl_best_nu` (fp32 logity + `paste_no_upscale`) + evale 22099028/30/32 (s=0.4/0.5/0.6),
+  łańcuchy na `afterany`; (c) potem instrument umiejscowienia SDXL na nowym `best_nu` i κ=0.5/0.7 —
+  anulowane 22094511 / 22087569/70 liczyły stary checkpoint. `X_sdxl_1600` evale 22077405/07
+  anulowane (wynik znany, −1.49; 1600 nasyca się).
 
 **Do zrobienia przed wysyłką (ścieżka krytyczna to pisanie, nie kolejka):**
 - Drugie ziarno `P_best` + jego pełna macierz forgettingu (tabela forgettingu w pracy jest
@@ -792,7 +814,8 @@ przy starcie, więc push zmieniłby kod czekających zadań pod starym `run-info
 dwuenkoderowe na SDXL; letterbox z bboxem przez korelację wzorca; L2DM na SDXL (OOM); kompozycja
 wielokonceptowa (ITP/RTP); `R_tail` trzecie ziarno na SD-1.5.
 
-**Nie robić (zmierzone albo rozstrzygnięte):** kotwica na gałąź (zamraża transfer w przód);
+**Nie robić (zmierzone albo rozstrzygnięte):** `share_heads` pod groundingiem (−1.6…−1.9 IA,
+−16 pp placementu); kotwica na gałąź (zamraża transfer w przód);
 `prompt_aug` (−1.40 IA na SDXL); `paste_scale_full_p` (−2.4 IA); `boxonly` (LoRA nie przejmuje
 tożsamości: 53.6/55.0 wobec 62.3); 1600 kroków (nasyca się); tokeny groundingu bez klucza
 (= GLIGEN bez semantyki, claim (ii) upada); rozdzielanie tożsamości od umiejscowienia przez
@@ -810,11 +833,11 @@ szerokości głowicy per warstwa; gonienie wypełnienia kadru pod metrykę.
   wymagają prefetchu na login-nodzie.
 - `TMPDIR=/tmp` we wszystkich runnerach — quota inode'ów $SCRATCH bywa pełna (inne projekty).
 - Skrypty sbatch TYLKO w `scripts/` (scratchpad sesji jest czyszczony/niewidoczny z węzłów).
-- venv wspólny z UnHype (python 3.11; instalacje przez `uv pip`, venv nie ma pipa; uwaga na
-  cudze pakiety w ~/.local dla pythona 3.9 — mylą `pip list`). **To jest bomba zegarowa:**
-  `scripts/sbatch_cl.sh` ma `VENV=../unlearning/UnHype/.venv`, a `unlearning` leży w katalogu
-  grantu `plggrecontext`, który **wygasa 2026-09-08**. Na Athenie nie ma zamiennika — trzeba zbudować
-  własny venv w `$SCRATCH/venvs/`, jak zrobione na Heliosie (patrz niżej).
+- **Athena ma własny venv** `$SCRATCH/venvs/continualhyper-athena` (5.5 GB, torch 2.7.1,
+  diffusers 0.30.0; sprawdzone 2026-09-07), `slurm/clusters/athena.sh` na niego wskazuje i `env.sh`
+  eksportuje `VENV`, który wygrywa z `${VENV:-../unlearning/UnHype/.venv}` w runnerach. Wcześniejsza
+  „bomba zegarowa" (venv UnHype w grancie `plggrecontext` wygasającym 2026-09-08) jest więc
+  rozbrojona. Uwaga na cudze pakiety w ~/.local dla pythona 3.9 — mylą `pip list`.
 - Smoke przed każdym pełnym treningiem + strażnik (weryfikacja gradientów w checkpoincie,
   auto-scancel łańcucha); łańcuchy jobów na `--dependency=afterok`.
 - Nie commitować/pushować bez zgody. Przy zmianie headline'u lub dużych wydatkach GPU — pytać.

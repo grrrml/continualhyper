@@ -152,6 +152,10 @@ class ContinualHyperManager(nn.Module):
         self.ground_gain_res = None      # {strona mapy attn2 -> mnoznik kappa}, None = 1.0 wszedzie
         self.ground_confine = 0.0        # kara logitu dla tokenow konceptu poza ramka (0 = wylaczona)
         self.ground_confine_tail = False  # kara do konca sekwencji (CLIP przyczynowy), nie tylko span
+        # Wstrzyk GSA mnozony takze przez `lora_scale`, zeby oba tory adaptera slably razem.
+        # Bez tego galaz jest stala na calej krzywej s_lora i ciagnie TA w dol niezaleznie od
+        # skali LoRA (na SDXL bramki sa 2x wieksze niz na SD-1.5). Inference-only, domyslnie OFF.
+        self.ground_scale_with_lora = False
         self.ground_film = None
         self._ground_film_gb = None
         if self.ground_gsa:

@@ -489,6 +489,8 @@ class GroundedAttnProcessor:
                     gres = getattr(self.manager, "ground_gain_res", None)
                     if gres:
                         gain *= float(gres.get(gh, 1.0))
+                    if getattr(self.manager, "ground_scale_with_lora", False):
+                        gain *= float(getattr(self.manager, "lora_scale", 1.0))
                     out = out + gain * torch.tanh(gate).to(out.dtype) * ins * read_h
             g = None
         else:
