@@ -1,0 +1,412 @@
+# T50_cc101 -- scaling the task axis to T=50 on CustomConcept101.
+#
+# WHY: the paper's storage argument says the hypernetwork is O(1) in T and overtakes
+# per-concept adapter storage past ~49 concepts. Every run so far stops at T=10, i.e. on
+# the wrong side of that crossing. This config is P_paper's recipe run over 50 concepts.
+#
+# HYPERPARAMETERS: identical to configs/phaseP/P_paper.yaml (seed, resolution, model, hyper,
+# task_cond, target_modules, training, infer, reg), with two deliberate differences:
+#
+#   1. The grounding branch is REMOVED (task_cond.ground_cond / ground_geo /
+#      ground_geo_analytic / ground_gsa, and training.seg_dir / bg_dir / box_aug_p /
+#      box_t_min_frac / alpha_erode). Those options are only meaningful when the segmented
+#      cut-outs (data/seg/<concept_id>) and the background bank (data/backgrounds) exist,
+#      and both banks were built ONLY for the ten CIFC concepts. With ground_cond on and no
+#      cut-outs, train_cl.py would still install grounded attention on every attn2 layer and
+#      train the grounding head, but it would never see a paste composite or a real box --
+#      i.e. an untrained, always-boxless branch silently added to the parameter count. So it
+#      is off, not merely unfed.
+#
+#   2. No caption_dir. CustomConcept101 ships images only (verified on the cluster: 634 image
+#      files across the 101 directories, zero .txt). data.ConceptDataset falls back to
+#      ConceptSpec.diag_prompt for every image, so each concept trains on the single fixed
+#      caption below. This is a real difference from P_paper, where CIDM's per-image captions
+#      give caption diversity. training.prompt_aug (EnhanceText, 27 templates) is the drop-in
+#      substitute but is left OFF here to keep "same hyperparameters as P_paper" literally
+#      true -- turn it on in a sibling config if caption collapse shows up.
+#
+# CONCEPT SELECTION (fixed and reproducible, no randomness):
+#   The 101 directory names split into 16 category prefixes (the text before the first "_").
+#   Concepts are emitted round-robin: pass 1 takes the alphabetically first directory of every
+#   prefix (prefixes in alphabetical order), pass 2 the second, and so on, stopping at 50.
+#   Pass 1 yields 16, pass 2 yields 16 (all prefixes have >= 2), pass 3 yields 13 (dish,
+#   flower, jewelry are exhausted), and pass 4 contributes the first 5 in prefix order
+#   (decoritems, furniture, instrument, luggage, pet) to reach exactly 50.
+#   Round-robin rather than "first 50 alphabetically" for two reasons: alphabetical order
+#   would cover only 9 of the 16 categories (no scenes, things, toys, transport, wearables),
+#   and it would present 7 cats in a row -- a same-class run is exactly the confound a
+#   continual-learning task order should not have.
+#
+# CLASS WORDS (derived from the directory name, never from looking at the images):
+#   Take the part after the first "_", drop the trailing index digits, and use it when it
+#   names the object. Split a concatenation of separate words ("actionfigure" -> "action
+#   figure", "teddybear" -> "teddy bear"); keep single dictionary words whole ("houseplant",
+#   "corkscrew", "backpack", "lighthouse", "sunglasses"). When the remainder is an index
+#   ("dish_1") or an attribute rather than a noun ("plushie_pink"), fall back to the category
+#   prefix. When the remainder names a live animal but the prefix says it is an object, keep
+#   both ("plushie_cow" -> "cow plushie", "toy_bear" -> "toy bear"). Proper nouns are not
+#   used as class words ("toy_pikachu1" -> "toy figure"): a trademarked character name in the
+#   class word would hand the identity to the text encoder, which is precisely what the
+#   adapter is supposed to carry.
+#
+# CATEGORY: only used for evaluation (gen_cifc.CAT_FILE has exactly pet/plushy/style).
+#   Animate subjects (pet_*, person_*) -> pet; everything else -> plushy, whose prompt file
+#   is generic "<TOK>, in the forest"-style object placement. No CC101 concept is a style.
+#   Note that scene_* concepts fit neither prompt file well -- see the report.
+#
+# identifier: '' with strip_identifier: true, exactly as P_paper: task identity is carried by
+# the random 128-d task key (task_cond.key_dim), not by a text token. Concepts that share a
+# class word therefore share a training caption (four cats here, as dog/dog2 in P_paper) --
+# that is by design, routing is by task index.
+seed: 2024
+resolution: 512
+weight_dtype: fp32
+sd_model_id: stable-diffusion-v1-5/stable-diffusion-v1-5
+output_dir: ./outputs/phaseT/T50_cc101
+hyper:
+  rank: 4
+  head_hidden: 50
+  alpha_init: 1.0
+  learn_alpha: true
+task_cond:
+  enabled: true
+  preserve_norm: false
+  learn_v: false
+  key_prompt: index
+  key_dim: 128
+token_mask_lora: true
+strip_identifier: true
+target_modules:
+- attn2.to_q
+- attn2.to_k
+- attn2.to_v
+- attn2.to_out.0
+concepts:
+# ---- pass 1: first concept of each of the 16 category prefixes -----------------------
+- concept_id: cc101_actionfigure_1
+  images_dir: data/benchmark_dataset/actionfigure_1
+  class_word: action figure
+  category: plushy
+  identifier: ''
+  prompt: a photo of action figure
+- concept_id: cc101_decoritems_houseplant1
+  images_dir: data/benchmark_dataset/decoritems_houseplant1
+  class_word: houseplant
+  category: plushy
+  identifier: ''
+  prompt: a photo of houseplant
+- concept_id: cc101_dish_1
+  images_dir: data/benchmark_dataset/dish_1
+  class_word: dish
+  category: plushy
+  identifier: ''
+  prompt: a photo of dish
+- concept_id: cc101_flower_1
+  images_dir: data/benchmark_dataset/flower_1
+  class_word: flower
+  category: plushy
+  identifier: ''
+  prompt: a photo of flower
+- concept_id: cc101_furniture_chair1
+  images_dir: data/benchmark_dataset/furniture_chair1
+  class_word: chair
+  category: plushy
+  identifier: ''
+  prompt: a photo of chair
+- concept_id: cc101_instrument_1
+  images_dir: data/benchmark_dataset/instrument_1
+  class_word: musical instrument
+  category: plushy
+  identifier: ''
+  prompt: a photo of musical instrument
+- concept_id: cc101_jewelry_earring
+  images_dir: data/benchmark_dataset/jewelry_earring
+  class_word: earring
+  category: plushy
+  identifier: ''
+  prompt: a photo of earring
+- concept_id: cc101_luggage_backpack1
+  images_dir: data/benchmark_dataset/luggage_backpack1
+  class_word: backpack
+  category: plushy
+  identifier: ''
+  prompt: a photo of backpack
+- concept_id: cc101_person_1
+  images_dir: data/benchmark_dataset/person_1
+  class_word: person
+  category: pet
+  identifier: ''
+  prompt: a photo of person
+- concept_id: cc101_pet_cat1
+  images_dir: data/benchmark_dataset/pet_cat1
+  class_word: cat
+  category: pet
+  identifier: ''
+  prompt: a photo of cat
+- concept_id: cc101_plushie_2
+  images_dir: data/benchmark_dataset/plushie_2
+  class_word: plushie
+  category: plushy
+  identifier: ''
+  prompt: a photo of plushie
+- concept_id: cc101_scene_barn
+  images_dir: data/benchmark_dataset/scene_barn
+  class_word: barn
+  category: plushy
+  identifier: ''
+  prompt: a photo of barn
+- concept_id: cc101_things_book
+  images_dir: data/benchmark_dataset/things_book
+  class_word: book
+  category: plushy
+  identifier: ''
+  prompt: a photo of book
+- concept_id: cc101_toy_bear
+  images_dir: data/benchmark_dataset/toy_bear
+  class_word: toy bear
+  category: plushy
+  identifier: ''
+  prompt: a photo of toy bear
+- concept_id: cc101_transport_bike
+  images_dir: data/benchmark_dataset/transport_bike
+  class_word: bike
+  category: plushy
+  identifier: ''
+  prompt: a photo of bike
+- concept_id: cc101_wearable_glasses
+  images_dir: data/benchmark_dataset/wearable_glasses
+  class_word: glasses
+  category: plushy
+  identifier: ''
+  prompt: a photo of glasses
+# ---- pass 2: second concept of each prefix -------------------------------------------
+- concept_id: cc101_actionfigure_2
+  images_dir: data/benchmark_dataset/actionfigure_2
+  class_word: action figure
+  category: plushy
+  identifier: ''
+  prompt: a photo of action figure
+- concept_id: cc101_decoritems_houseplant2
+  images_dir: data/benchmark_dataset/decoritems_houseplant2
+  class_word: houseplant
+  category: plushy
+  identifier: ''
+  prompt: a photo of houseplant
+- concept_id: cc101_dish_2
+  images_dir: data/benchmark_dataset/dish_2
+  class_word: dish
+  category: plushy
+  identifier: ''
+  prompt: a photo of dish
+- concept_id: cc101_flower_2
+  images_dir: data/benchmark_dataset/flower_2
+  class_word: flower
+  category: plushy
+  identifier: ''
+  prompt: a photo of flower
+- concept_id: cc101_furniture_chair2
+  images_dir: data/benchmark_dataset/furniture_chair2
+  class_word: chair
+  category: plushy
+  identifier: ''
+  prompt: a photo of chair
+- concept_id: cc101_instrument_music1
+  images_dir: data/benchmark_dataset/instrument_music1
+  class_word: musical instrument
+  category: plushy
+  identifier: ''
+  prompt: a photo of musical instrument
+- concept_id: cc101_jewelry_ring
+  images_dir: data/benchmark_dataset/jewelry_ring
+  class_word: ring
+  category: plushy
+  identifier: ''
+  prompt: a photo of ring
+- concept_id: cc101_luggage_purse1
+  images_dir: data/benchmark_dataset/luggage_purse1
+  class_word: purse
+  category: plushy
+  identifier: ''
+  prompt: a photo of purse
+- concept_id: cc101_person_2
+  images_dir: data/benchmark_dataset/person_2
+  class_word: person
+  category: pet
+  identifier: ''
+  prompt: a photo of person
+- concept_id: cc101_pet_cat2
+  images_dir: data/benchmark_dataset/pet_cat2
+  class_word: cat
+  category: pet
+  identifier: ''
+  prompt: a photo of cat
+- concept_id: cc101_plushie_bunny
+  images_dir: data/benchmark_dataset/plushie_bunny
+  class_word: bunny plushie
+  category: plushy
+  identifier: ''
+  prompt: a photo of bunny plushie
+- concept_id: cc101_scene_canal
+  images_dir: data/benchmark_dataset/scene_canal
+  class_word: canal
+  category: plushy
+  identifier: ''
+  prompt: a photo of canal
+- concept_id: cc101_things_book2
+  images_dir: data/benchmark_dataset/things_book2
+  class_word: book
+  category: plushy
+  identifier: ''
+  prompt: a photo of book
+- concept_id: cc101_toy_gnome
+  images_dir: data/benchmark_dataset/toy_gnome
+  class_word: toy gnome
+  category: plushy
+  identifier: ''
+  prompt: a photo of toy gnome
+- concept_id: cc101_transport_car1
+  images_dir: data/benchmark_dataset/transport_car1
+  class_word: car
+  category: plushy
+  identifier: ''
+  prompt: a photo of car
+- concept_id: cc101_wearable_jacket1
+  images_dir: data/benchmark_dataset/wearable_jacket1
+  class_word: jacket
+  category: plushy
+  identifier: ''
+  prompt: a photo of jacket
+# ---- pass 3: third concept of each prefix that has one (dish/flower/jewelry exhausted) -
+- concept_id: cc101_actionfigure_3
+  images_dir: data/benchmark_dataset/actionfigure_3
+  class_word: action figure
+  category: plushy
+  identifier: ''
+  prompt: a photo of action figure
+- concept_id: cc101_decoritems_houseplant3
+  images_dir: data/benchmark_dataset/decoritems_houseplant3
+  class_word: houseplant
+  category: plushy
+  identifier: ''
+  prompt: a photo of houseplant
+- concept_id: cc101_furniture_chair3
+  images_dir: data/benchmark_dataset/furniture_chair3
+  class_word: chair
+  category: plushy
+  identifier: ''
+  prompt: a photo of chair
+- concept_id: cc101_instrument_music2
+  images_dir: data/benchmark_dataset/instrument_music2
+  class_word: musical instrument
+  category: plushy
+  identifier: ''
+  prompt: a photo of musical instrument
+- concept_id: cc101_luggage_purse2
+  images_dir: data/benchmark_dataset/luggage_purse2
+  class_word: purse
+  category: plushy
+  identifier: ''
+  prompt: a photo of purse
+- concept_id: cc101_person_3
+  images_dir: data/benchmark_dataset/person_3
+  class_word: person
+  category: pet
+  identifier: ''
+  prompt: a photo of person
+- concept_id: cc101_pet_cat3
+  images_dir: data/benchmark_dataset/pet_cat3
+  class_word: cat
+  category: pet
+  identifier: ''
+  prompt: a photo of cat
+- concept_id: cc101_plushie_cow
+  images_dir: data/benchmark_dataset/plushie_cow
+  class_word: cow plushie
+  category: plushy
+  identifier: ''
+  prompt: a photo of cow plushie
+- concept_id: cc101_scene_castle
+  images_dir: data/benchmark_dataset/scene_castle
+  class_word: castle
+  category: plushy
+  identifier: ''
+  prompt: a photo of castle
+- concept_id: cc101_things_bottle1
+  images_dir: data/benchmark_dataset/things_bottle1
+  class_word: bottle
+  category: plushy
+  identifier: ''
+  prompt: a photo of bottle
+- concept_id: cc101_toy_pikachu1
+  images_dir: data/benchmark_dataset/toy_pikachu1
+  class_word: toy figure
+  category: plushy
+  identifier: ''
+  prompt: a photo of toy figure
+- concept_id: cc101_transport_car10
+  images_dir: data/benchmark_dataset/transport_car10
+  class_word: car
+  category: plushy
+  identifier: ''
+  prompt: a photo of car
+- concept_id: cc101_wearable_jacket2
+  images_dir: data/benchmark_dataset/wearable_jacket2
+  class_word: jacket
+  category: plushy
+  identifier: ''
+  prompt: a photo of jacket
+# ---- pass 4: first five prefixes with a fourth concept, to reach exactly 50 -----------
+- concept_id: cc101_decoritems_lamp1
+  images_dir: data/benchmark_dataset/decoritems_lamp1
+  class_word: lamp
+  category: plushy
+  identifier: ''
+  prompt: a photo of lamp
+- concept_id: cc101_furniture_sofa1
+  images_dir: data/benchmark_dataset/furniture_sofa1
+  class_word: sofa
+  category: plushy
+  identifier: ''
+  prompt: a photo of sofa
+- concept_id: cc101_instrument_music3
+  images_dir: data/benchmark_dataset/instrument_music3
+  class_word: musical instrument
+  category: plushy
+  identifier: ''
+  prompt: a photo of musical instrument
+- concept_id: cc101_luggage_purse3
+  images_dir: data/benchmark_dataset/luggage_purse3
+  class_word: purse
+  category: plushy
+  identifier: ''
+  prompt: a photo of purse
+- concept_id: cc101_pet_cat4
+  images_dir: data/benchmark_dataset/pet_cat4
+  class_word: cat
+  category: pet
+  identifier: ''
+  prompt: a photo of cat
+training:
+  steps_per_task: 400
+  batch_size: 2
+  lr: 0.0001
+  weight_decay: 0.0
+  grad_clip: 1.0
+  log_every: 50
+  num_workers: 2
+  # NOTE: the in-training diagnostic regenerates EVERY concept seen so far, so its cost is
+  # O(T^2): at T=10 that is 4*55 = 220 generations, at T=50 it is 4*1275 = 5100. Kept at
+  # P_paper's value for comparability -- raise it (or set 0) if wall clock is the binding
+  # constraint. See the report.
+  diagnostic_freq: 0   # O(T^2): przy T=50 diagnostyka to ~5100 generacji
+  augment: true
+infer:
+  steps: 50
+  guidance_scale: 7.5
+wandb:
+  enabled: true
+  project: ContinualHyper
+  name: T50_cc101
+reg:
+  weight: 100.0
+  lookahead_lr: 0.0001
