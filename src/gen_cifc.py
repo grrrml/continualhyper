@@ -29,7 +29,11 @@ from .sampling import ddim_sample
 from .sd_loader import load_sd
 
 EVAL_DIR = "data/CIFC/datasets/evaluation_prompts"
-CAT_FILE = {"pet": "test_pet.txt", "plushy": "test_plushy.txt", "style": "test_style.txt"}
+CAT_FILE = {"pet": "test_pet.txt", "plushy": "test_plushy.txt", "style": "test_style.txt",
+            # CustomConcept101 to w wiekszosci przedmioty, a prompty dla pluszakow ich
+            # nie opisuja ("a broken canal", "a child is playing a sofa"). test_object.txt
+            # ma te sama strukture co tamte pliki: 5 scen, 5 stylizacji, 5 ustawien, 5 ujec.
+            "object": "test_object.txt"}
 NEG = ("longbody, lowres, bad anatomy, bad hands, extra digit, fewer digits, cropped, "
        "worst quality, low quality")
 

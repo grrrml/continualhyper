@@ -42,7 +42,7 @@ from src.manager import build_hyper
 from src.injection import DEFAULT_TARGETS
 from src.sampling import ddim_sample
 from src.tokens import token_span_mask
-from src.regional import set_grounded, set_regional_self
+from src.regional import set_grounded, set_regional, set_regional_self
 from src.cifc_metrics import _Dino, _Clip
 
 ap = argparse.ArgumentParser()
@@ -51,6 +51,14 @@ ap.add_argument("--ckpt", default="outputs/phaseP/P_ground_gsa/hyper.pt")
 ap.add_argument("--grid", default="4.0:0.15", help="kappa:sched[:confine], po przecinku")
 ap.add_argument("--gain_res", default="", help="mnozniki kappa per strona mapy, np. '64:0,32:0.5'")
 ap.add_argument("--boxes", default="quads", choices=["quads", "halves", "full"])
+ap.add_argument("--layout", default="branch", choices=["branch", "prompt", "regional"],
+                help="czym zadajemy pozycje. branch = galaz groundingu (domyslne, bez zmian); "
+                     "prompt = PODLOGA: kappa=0 na caly przebieg, a pozycja dopisana slowami "
+                     "do promptu; regional = uwaga regionalna (confine) na attn2 zamiast "
+                     "galezi, ten sam adapter. W trybach bazowych trzeci element --grid "
+                     "(confine) jest bezczynny, bo kara zyje tylko dopoki ground_gain > 0. "
+                     "NIE laczyc z --bootstrap/--scaffold_steps/--bg_ref: te sciezki nie sa "
+                     "swiadome trybu (patrz komentarze przy nich)")
 ap.add_argument("--n", type=int, default=3)
 ap.add_argument("--scale", type=float, default=0.7)
 ap.add_argument("--steps", type=int, default=30)
@@ -105,6 +113,11 @@ BOXES = {"quads": {"TL": (0.25, 0.25, 0.5, 0.5), "TR": (0.75, 0.25, 0.5, 0.5),
                    "BL": (0.25, 0.75, 0.5, 0.5), "BR": (0.75, 0.75, 0.5, 0.5)},
          "halves": {"L": (0.25, 0.5, 0.5, 1.0), "R": (0.75, 0.5, 0.5, 1.0)},
          "full": {"F": (0.5, 0.5, 1.0, 1.0)}}[a.boxes]
+# Pozycja SLOWAMI dla --layout prompt: klucze BOXES juz nazywaja cwiartki. Pusta fraza
+# (pelny kadr) = prompt bez zmian, bo nie ma czego zadac.
+POS_PHRASE = {"TL": "in the top left", "TR": "in the top right",
+              "BL": "in the bottom left", "BR": "in the bottom right",
+              "L": "on the left", "R": "on the right", "F": ""}
 # Klasy COCO podpowiadane per koncept (lista, bo kaczka gumowa nie ma swojej klasy).
 HINT = {"cifc_dog": ("dog",), "cifc_dog2": ("dog",), "cifc_cat": ("cat",),
         "cifc_cat2": ("cat",), "cifc_backpack": ("backpack", "handbag"),
@@ -129,6 +142,13 @@ manager.lora_scale = a.scale
 manager.ground_gain_res = GAIN_RES
 manager.ground_confine_tail = a.confine_tail
 set_grounded(bundle.unet, manager)
+if a.layout != "branch" and getattr(manager, "ground_cond", False) \
+        and not getattr(manager, "ground_gsa", False):
+    # kappa (ground_gain) skaluje TYLKO wstrzyk GSA; stara skalarna bramka
+    # tanh(gate)*sigmoid(logit)*Ve nie jest przez nia mnozona, wiec w takim configu
+    # "galaz milczy" byloby nieprawda i wiersz bazowy klamalby po cichu.
+    sys.exit("--layout " + a.layout + " wymaga configu z ground_gsa: true "
+             "(w configu bez GSA kappa=0 nie wylacza galezi groundingu)")
 dino = _Dino("cuda")
 clip = _Clip("cuda")
 
@@ -141,6 +161,7 @@ CATS = _w.meta["categories"]
 print(f"[env] torch {torch.__version__} | {torch.cuda.get_device_name(0)} | "
       f"host {os.uname().nodename} {os.uname().machine}", flush=True)
 print(f"[cfg] ckpt {a.ckpt} | boxes {a.boxes} | n {a.n} | scena '{a.scene}' | "
+      f"layout {a.layout} | "
       f"gain_res {GAIN_RES} | "
       f"self_leak {a.self_leak} | "
       f"prefix {a.prefix} | confine_tail {a.confine_tail} | seed0 {a.seed0} | "
@@ -295,10 +316,14 @@ def crops(img, mode):
 KEYS = ("iou", "hit", "con", "fill", "q", "n", "ndet", "dino", "dcol", "ncol",
         "bgg", "bgs", "nbg", "bgsim", "nbgsim", "dcrop", "dmaskd", "ncrop", "ta")
 for kap, sched, conf in GRID:
-    manager.ground_gain_base = kap
+    # Tryby bazowe: galaz groundingu MILCZY na caly przebieg -- kappa=0, dokladnie tak jak
+    # zeruje ja scaffold_latent. Wstrzyk GSA jest mnozony przez ground_gain, a kara
+    # `ground_confine` ma ground_gain > 0 w warunku, wiec zeruje sie razem z nim.
+    kap_eff = kap if a.layout == "branch" else 0.0
+    manager.ground_gain_base = kap_eff
     manager.ground_sched_frac = sched
     manager.ground_confine = conf
-    print(f"=== kappa={kap} sched={sched} confine={conf}", flush=True)
+    print(f"=== kappa={kap_eff} sched={sched} confine={conf} layout={a.layout}", flush=True)
     agg = dict.fromkeys(KEYS, 0.0)
     for j, c in enumerate(cfg["concepts"]):
         if c.get("category") == "style":
@@ -313,7 +338,10 @@ for kap, sched, conf in GRID:
         txt = clip.txt_feats([prompt])          # juz znormalizowane
         ch, pooled, _ = bundle.encode_text([prompt])
         uh, up, _ = bundle.encode_text([""])   # SDXL: pooled uncond spojny z sekwencja
-        tm = token_span_mask(bundle.tokenizer, [prompt], cls).cuda() if cfg.get("token_mask_lora") else None
+        # span konceptu potrzebny takze trybowi `regional` (region adresuje TOKENY konceptu),
+        # niezaleznie od token_mask_lora; `tm` (maska LoRA) zostaje sterowana configiem.
+        tspan = token_span_mask(bundle.tokenizer, [prompt], cls).cuda()
+        tm = tspan if cfg.get("token_mask_lora") else None
         st = dict.fromkeys(KEYS, 0.0)
         paths, gcol_sum, gcol_n = {}, np.zeros(3), 0
         scaffold = {}                      # (ziarno) -> latent tla; nie zalezy od ramki
@@ -342,6 +370,25 @@ for kap, sched, conf in GRID:
             return scaffold[i_seed]
         for bname, box in BOXES.items():
             manager.cond_box = box
+            # --- czym zadajemy pozycje w tej iteracji -------------------------------
+            # branch/regional: prompt i warunkowanie takie jak dotad (TE SAME obiekty).
+            # prompt: pozycja dopisana slowami, wiec CALE warunkowanie tekstowe (sekwencja,
+            # pooled i maska spanu) liczone na promptcie KONCOWYM -- maska policzona przed
+            # doklejeniem frazy siedzialaby na innych tokenach i nikt by tego nie zauwazyl.
+            bprompt, bch, bpooled, bspan, btm = prompt, ch, pooled, tspan, tm
+            if a.layout == "prompt":
+                _ph = POS_PHRASE.get(bname, "")
+                bprompt = (prompt + " " + _ph) if _ph else prompt
+                bch, bpooled, _ = bundle.encode_text([bprompt])
+                bspan = token_span_mask(bundle.tokenizer, [bprompt], cls).cuda()
+                btm = bspan if cfg.get("token_mask_lora") else None
+            if a.layout == "regional":
+                # UWAGA na dwie konwencje ramki, jak nizej przy self_leak: cond_box to
+                # (cx,cy,w,h), a _region_vec chce (x0,y0,x1,y1).
+                cx, cy, bw, bh = box
+                set_regional(bundle.unet, [((cx - bw / 2, cy - bh / 2,
+                                             cx + bw / 2, cy + bh / 2), bspan, False)],
+                             confine=True)
             if a.self_leak >= 0:
                 # UWAGA na dwie konwencje ramki w tym samym pliku: GSA (geo_inside) uzywa
                 # (cx,cy,w,h), a _region_vec dla procesorow regionalnych uzywa (x0,y0,x1,y1).
@@ -351,8 +398,8 @@ for kap, sched, conf in GRID:
                                   leak=a.self_leak, manager=manager)
             for i in range(a.n):
                 g = torch.Generator(device="cuda").manual_seed(a.seed0 + i)
-                img = ddim_sample(bundle, manager, ch, uh, pooled, num_inference_steps=a.steps,
-                                  guidance_scale=7.5, generator=g, task_idx=j, token_mask=tm,
+                img = ddim_sample(bundle, manager, bch, uh, bpooled, num_inference_steps=a.steps,
+                                  guidance_scale=7.5, generator=g, task_idx=j, token_mask=btm,
                                   uncond_pooled=up, bootstrap_steps=a.bootstrap,
                                   bootstrap_bg=(scaffold_latent(i) if a.scaffold_steps
                                                 else (bg_latent(j * 97 + i) if a.bootstrap
@@ -430,9 +477,18 @@ for kap, sched, conf in GRID:
                     dr.rectangle(req, outline=(255, 0, 0), width=3)
                     if dbox is not None:
                         dr.rectangle(dbox, outline=(0, 255, 0), width=3)
-                    pil.save(os.path.join(a.out, c["concept_id"] + f"_k{kap}_s{sched}_c{conf}_{bname}.png"))
+                    # kap_eff, nie kap: plik _k4.0 z przebiegu o kappa=0 klamie. Znacznik
+                    # trybu tylko poza `branch`, zeby nazwy dotychczasowych podgladow
+                    # zostaly te same; bez niego trzy wiersze tabeli nadpisuja sie w --out.
+                    _sfx = "" if a.layout == "branch" else "_" + a.layout
+                    pil.save(os.path.join(a.out, c["concept_id"]
+                                          + f"_k{kap_eff}_s{sched}_c{conf}_{bname}{_sfx}.png"))
         n, nd = max(1.0, st["n"]), max(1.0, st["ndet"])
-        print(f"  {'':<16} TA {st['ta']/n:.4f} | prompt: '{prompt}'", flush=True)
+        # TA liczona wobec promptu BAZOWEGO takze w trybie `prompt`: fraza pozycji jest
+        # czescia METODY (jak ramka w trybie branch), a nie zamowionej tresci -- liczona
+        # wobec promptu z fraza bylaby nieporownywalna z pozostalymi wierszami tabeli.
+        _pos = f" (+pozycja, np. '{bprompt}')" if a.layout == "prompt" else ""
+        print(f"  {'':<16} TA {st['ta']/n:.4f} | prompt: '{prompt}'{_pos}", flush=True)
         print(f"  {c['concept_id']:<16} cwiartki {int(st['q'])}/{int(st['n'])} = {st['q']/n:.0%} | "
               f"IoU {st['iou']/nd:.3f} | IoU>0.5 {st['hit']/nd:.0%} | zawarcie {st['con']/nd:.2f} | "
               f"wypelnienie {st['fill']/nd:.2f} | DINO {st['dino']/n:.4f} | "
@@ -464,5 +520,5 @@ for kap, sched, conf in GRID:
           f"tlo grad {agg['bgg']/max(1.0, agg['nbg']):.4f} | "
           f"tlo std {agg['bgs']/max(1.0, agg['nbg']):.4f} | "
           + (f"tlo sim {agg['bgsim']/max(1.0, agg['nbgsim']):.4f} | " if agg['nbgsim'] else "")
-          + f"det {int(agg['ndet'])}/{int(agg['n'])}", flush=True)
+          + f"det {int(agg['ndet'])}/{int(agg['n'])} | layout {a.layout}", flush=True)
 print("IOU_DONE", flush=True)
