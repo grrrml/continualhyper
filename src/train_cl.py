@@ -120,6 +120,20 @@ def main():
     # Domyslnie WYLACZONE, zeby wszystkie dotychczasowe configi odtwarzaly sie bez zmian.
     ground_anchor = bool(reg_cfg.get("ground_anchor", False))
     ground_anchor_gates = bool(reg_cfg.get("ground_anchor_gates", False))
+    # Skad biora sie cele kotwicy. Domyslnie "rolling": snapshot na starcie KAZDEGO zadania,
+    # czyli tak jak u von Oswalda. To jest lancuch wiezow WZGLEDNYCH -- zadanie 1 przypina psa
+    # do tego, czym jest po zadaniu 0, zadanie 2 do tego, czym stal sie po zadaniu 1 -- wiec
+    # powolny dryf kumuluje sie jak bladzenie losowe i najstarszy koncept ma za soba najdluzszy
+    # lancuch (zmierzone przy T=50: pies traci 28.7% DINO, reszta 6-13%).
+    #   "era" -- snapshot co `anchor_every` zadan. Lancuch skraca sie T/N razy.
+    #   "ema" -- srednia wykladnicza parametrow, cel pelznie zamiast skakac.
+    # Obie kosztuja JEDNA dodatkowa kopie glowic, niezaleznie od T; przechowywanie gotowych
+    # adapterow per koncept byloby magazynem O(T), czyli tym, przeciw czemu jest cala praca.
+    anchor_mode = str(reg_cfg.get("anchor_mode", "rolling"))
+    anchor_every = int(reg_cfg.get("anchor_every", 10))
+    anchor_ema = float(reg_cfg.get("anchor_ema", 0.9))
+    if anchor_mode not in ("rolling", "era", "ema"):
+        raise ValueError(f"reg.anchor_mode: {anchor_mode!r}")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # fp32 backbone for the baseline (no grad-scaler headaches; hyper grads stay clean).
@@ -237,7 +251,11 @@ def main():
     seed0 = int(cfg.get("seed", 2024))
     unet = bundle.unet
 
-    regmsg = (f"von-Oswald reg beta={reg_weight} (lookahead_lr={lookahead_lr})" if reg_weight > 0 else "NO reg")
+    regmsg = (f"von-Oswald reg beta={reg_weight} (lookahead_lr={lookahead_lr}, "
+              f"anchor={anchor_mode}"
+              + (f"/{anchor_every}" if anchor_mode == "era" else
+                 f"/{anchor_ema}" if anchor_mode == "ema" else "") + ")"
+              if reg_weight > 0 else "NO reg")
     tcmsg = ("task_cond ON (learned V_t + Gram-Schmidt ortho)" if manager.task_cond_enabled else "task_cond OFF")
     print(f"[CL] {n_tasks} tasks (sequential, {regmsg}, {tcmsg}) | {steps_per_task} steps/task"
           f" | bs={batch_size} | lr={lr}", flush=True)
@@ -260,6 +278,7 @@ def main():
     named = list(manager.heads.named_parameters())       # (name, param), stable across tasks
     params = [p for _, p in named]
     anchor_conds = []   # hyper conditioning of each learned concept's canonical prompt (reg anchors)
+    anchor_ref = None   # JEDNA kopia glowic (era/ema); None w trybie rolling
     gstep = 0
     _clip_img = None                      # lazy: only built when sem_dim is on
     for k, spec in enumerate(specs):
@@ -311,15 +330,32 @@ def main():
         _caps = sorted({_ds._caption(os.path.splitext(os.path.basename(q))[0]) for q in _ds.paths})
         print(f"[CL] captiony {spec.concept_id}: " + " | ".join(_caps), flush=True)
 
-        # von-Oswald: snapshot the hypernet output on OLD concepts at the START of this task (Theta*)
+        # Cele kotwicy: wyjscie hipersieci na STARYCH kluczach. Zrodlo zalezy od anchor_mode
+        # (patrz komentarz przy jego wczytaniu). W kazdym trybie liczymy je RAZ na zadanie
+        # i forwardem z kluczy, wiec nie przechowujemy zadnych adapterow.
         targets, anchors = None, None
         ground_targets, ground_ids = None, list(range(len(anchor_conds)))
         gate_targets = None
         if reg_weight > 0 and anchor_conds:
             anchors = torch.stack(anchor_conds, 0)           # [k, clip_size], already conditioned
             with torch.no_grad():
-                targets = {n: (a.detach(), b.detach())
-                           for n, (a, b) in manager.generate_lora(anchors).items()}
+                if anchor_mode == "rolling":
+                    src = None                                # biezace parametry
+                elif anchor_mode == "era":
+                    if k % anchor_every == 0 or anchor_ref is None:
+                        anchor_ref = {n: p.detach().clone() for n, p in named}
+                        print(f"[CL] kotwica: nowy snapshot ery na zadaniu {k}", flush=True)
+                    src = anchor_ref
+                else:                                         # ema
+                    if anchor_ref is None:
+                        anchor_ref = {n: p.detach().clone() for n, p in named}
+                    else:
+                        for n, p in named:
+                            anchor_ref[n].mul_(anchor_ema).add_(p.detach(), alpha=1 - anchor_ema)
+                    src = anchor_ref
+                lora = (manager.generate_lora(anchors) if src is None
+                        else manager.lora_from_params(anchors, src))
+                targets = {n: (a.detach(), b.detach()) for n, (a, b) in lora.items()}
                 if ground_anchor:
                     gt = manager.generate_ground(ground_ids)
                     ground_targets = None if gt is None else [t.detach() for t in gt]
