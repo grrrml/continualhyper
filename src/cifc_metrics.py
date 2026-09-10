@@ -34,8 +34,17 @@ def _chunks(lst, n):
         yield lst[i:i + n]
 
 
+# Te same rozszerzenia i ta sama nieczulosc na wielkosc liter co w `data.ConceptDataset`.
+# Wczesniej bylo tylko *.jpg i *.png, wiec koncept zlozony z .jpeg albo .JPG dawal PUSTA liste
+# referencji, a `img_feats` zwracalo wtedy pusty tensor na CPU i metryki wywalaly sie na
+# niezgodnosci urzadzen (CustomConcept101: 36 plikow .jpeg i 11 .JPG). Na CIFC, gdzie wszystko
+# jest .jpg, blad byl niewidoczny.
+_IMG_EXTS = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
+
+
 def _imgs(d):
-    return sorted(glob.glob(os.path.join(d, "*.jpg")) + glob.glob(os.path.join(d, "*.png")))
+    return sorted(p for p in glob.glob(os.path.join(d, "*"))
+                  if p.lower().endswith(_IMG_EXTS))
 
 
 class _Clip:
@@ -125,6 +134,11 @@ def main():
     ref_clip, ref_dino = {}, {}
     for j, c in enumerate(concepts):
         rp = _imgs(c["images_dir"])
+        if not rp:
+            raise FileNotFoundError(
+                f"koncept {c['concept_id']}: brak zdjec referencyjnych w {c['images_dir']}. "
+                f"Bez nich CLIP-I i DINO nie maja do czego porownywac -- przerywamy zamiast "
+                f"raportowac cisza.")
         ref_clip[j], ref_dino[j] = clip.img_feats(rp), dino.img_feats(rp)
 
     M = {}
