@@ -128,6 +128,10 @@ def parse_args():
     p.add_argument("--only_tasks", default=None,
                    help="comma-separated checkpoint indices k to generate (shard the matrix "
                         "across jobs); default: all")
+    p.add_argument("--diagonal", action="store_true",
+                   help="tylko komorki j==k, czyli kazdy koncept oceniony checkpointem tuz po "
+                        "jego nauce. Razem z przebiegiem --final_only daje sredni forgetting po "
+                        "WSZYSTKICH zadaniach, a nie tylko po pierwszej dziesiatce")
     return p.parse_args()
 
 
@@ -252,6 +256,8 @@ def main():
             from .tokens import apply_learned_tokens
             apply_learned_tokens(bundle, blob["learned_tokens"])   # rows as of THIS checkpoint
         for j in range(k + 1):                              # concept j was seen by task k
+            if args.diagonal and j != k:
+                continue
             c = concepts[j]
             if only is not None and c["concept_id"] not in only:
                 continue                                    # leave already-generated cells untouched
