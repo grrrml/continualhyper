@@ -107,6 +107,12 @@ def one(manager, bundle, ckpt, T, hidden, device):
                 "lora_L99": eff_rank((x_L.flatten(1) - x_L.flatten(1).mean(0, keepdim=True)), 0.99),
                 "lora_R99": eff_rank((x_R.flatten(1) - x_R.flatten(1).mean(0, keepdim=True)), 0.99),
                 "lora_L95": eff_rank((x_L.flatten(1) - x_L.flatten(1).mean(0, keepdim=True)), 0.95),
+                # Ile wymiarow R^in zajmuja LACZNIE kolumny x_L wszystkich konceptow. To jest
+                # dokladnie to, co musi rozpiac wspolna baza U przy basis_q, wiec ta liczba mowi,
+                # jak duze q nie zaczyna wiazac przy danym T. NIE centrujemy: baza ma pokryc
+                # rzeczywiste kolumny, razem ze skladowa wspolna.
+                "basis_L99": eff_rank(x_L.permute(1, 0, 2).reshape(x_L.shape[1], -1), 0.99),
+                "basis_R99": eff_rank(x_R.permute(0, 1, 2).reshape(-1, x_R.shape[2]), 0.99),
             })
 
     def med(k):
@@ -117,7 +123,8 @@ def one(manager, bundle, ckpt, T, hidden, device):
     print(f"\nckpt {os.path.basename(ckpt)} | T={T} | head_hidden={hidden} | "
           f"gorna granica rzedu po centrowaniu = {cap}")
     print(f"{'wielkosc':>10} {'mediana':>8} {'min':>5} {'max':>5}   (po {len(rows)} warstwach)")
-    for k in ("hidden_L", "hidden_R", "lora_L99", "lora_R99", "lora_L95"):
+    for k in ("hidden_L", "hidden_R", "lora_L99", "lora_R99", "lora_L95",
+              "basis_L99", "basis_R99"):
         v = [r[k] for r in rows]
         print(f"{k:>10} {med(k):8d} {min(v):5d} {max(v):5d}")
     print(f"\nwykorzystanie gardla (mediana hidden_L / {cap}): "
