@@ -39,6 +39,33 @@ from src.manager import build_hyper, _key               # noqa: E402
 from src.sd_loader import load_sd                       # noqa: E402
 
 
+def _center(G):
+    """Centrowanie macierzy Grama: G_c = C G C dla C = I - 11^T/T (odejmuje srednia dW)."""
+    T = G.shape[0]
+    C = torch.eye(T, dtype=G.dtype, device=G.device) - 1.0 / T
+    return C @ G @ C
+
+
+def eff_rank_gram(G, frac):
+    """Rzad efektywny z macierzy Grama [T,T] juz wycentrowanej. Wartosci wlasne Grama to
+    KWADRATY wartosci osobliwych, wiec energia to one same, bez dodatkowego kwadratu."""
+    w = torch.linalg.eigvalsh(G.double()).flip(0).clamp_min(0)
+    e = w.cumsum(0) / w.sum().clamp_min(1e-30)
+    return int((e < frac).sum().item()) + 1
+
+
+def dw_gram(A, B):
+    """Iloczyny skalarne <dW_i, dW_j> dla dW = A @ B, BEZ materializowania [in, out].
+
+    Z tozsamosci sladu <A_i B_i, A_j B_j> = tr((A_i^T A_j)(B_j B_i^T)); oba czynniki sa [r, r].
+    Jedyna wielkosc niezmiennicza na cechowanie (A R, R^-1 B), czyli jedyna, ktora mowi o
+    FUNKCJI adaptera, a nie o wyborze rozkladu.
+    """
+    X = torch.einsum("iar,jas->ijrs", A, A)
+    Y = torch.einsum("jsb,irb->ijsr", B, B)
+    return (X * Y.transpose(-1, -2)).sum((-1, -2))
+
+
 def eff_rank(M, frac):
     """Najmniejsze r pokrywajace `frac` energii widma macierzy juz wycentrowanej."""
     s = torch.linalg.svdvals(M.double())
@@ -113,6 +140,11 @@ def one(manager, bundle, ckpt, T, hidden, device):
                 # rzeczywiste kolumny, razem ze skladowa wspolna.
                 "basis_L99": eff_rank(x_L.permute(1, 0, 2).reshape(x_L.shape[1], -1), 0.99),
                 "basis_R99": eff_rank(x_R.permute(0, 1, 2).reshape(-1, x_R.shape[2]), 0.99),
+                # Rzad w przestrzeni FUNKCJI, czyli samych dW. Czynniki maja wolnosc cechowania
+                # (A R, R^-1 B daje to samo dW), wiec rzad liczony na x_L moze ja mierzyc zamiast
+                # realnego zroznicowania adapterow. Ta liczba jej nie widzi.
+                "dw99": eff_rank_gram(_center(dw_gram(x_L, x_R)), 0.99),
+                "dw95": eff_rank_gram(_center(dw_gram(x_L, x_R)), 0.95),
             })
 
     def med(k):
@@ -124,7 +156,7 @@ def one(manager, bundle, ckpt, T, hidden, device):
           f"gorna granica rzedu po centrowaniu = {cap}")
     print(f"{'wielkosc':>10} {'mediana':>8} {'min':>5} {'max':>5}   (po {len(rows)} warstwach)")
     for k in ("hidden_L", "hidden_R", "lora_L99", "lora_R99", "lora_L95",
-              "basis_L99", "basis_R99"):
+              "basis_L99", "basis_R99", "dw99", "dw95"):
         v = [r[k] for r in rows]
         print(f"{k:>10} {med(k):8d} {min(v):5d} {max(v):5d}")
     print(f"\nwykorzystanie gardla (mediana hidden_L / {cap}): "

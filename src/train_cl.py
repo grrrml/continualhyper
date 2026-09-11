@@ -88,6 +88,41 @@ def _reg_mse(now, targets):
     return torch.stack(terms).mean()
 
 
+def _reg_dw(now, targets):
+    """To samo wiezanie, ale liczone na ILOCZYNIE dW = x_L @ x_R, a nie na czynnikach osobno.
+
+    Po co: rozklad dW na (x_L, x_R) nie jest jednoznaczny -- dla dowolnej odwracalnej R rzedu r
+    para (x_L R, R^-1 x_R) daje DOKLADNIE to samo dW, czyli te sama funkcje. MSE na czynnikach
+    karze wiec takze te zmiany, ktore nic nie zmieniaja w adapterze: regularyzator walczy z
+    wolnoscia cechowania zamiast z dryfem wyjscia. Przy beta=100 to jest duzy, bezuzyteczny
+    nacisk i dobry kandydat na wytlumaczenie, czemu kotwica kosztuje plastycznosc, a nie kupuje
+    za to zatrzymania starych konceptow (era/ema wysycily sie w miejscu, beta=300 nie ruszylo
+    nachylenia). Argument o niejednoznacznosci rozkladu bierzemy z LoRAGen (ICLR 2026), ktory
+    z tego samego powodu uczy sie w przestrzeni pelnych macierzy adaptacji.
+
+    Liczymy bez materializowania dW ([in, out] na warstwe i kotwice to setki MB). Z tozsamosci
+    sladu: ||A1 B1 - A2 B2||_F^2 = tr(G1 H1) - 2 tr(Gx Hx) + tr(G2 H2), gdzie G = A^T A oraz
+    H = B B^T sa [r, r]. Koszt O(r^2 (in + out)) na warstwe, czyli praktycznie za darmo.
+    Dzielimy przez in*out, zeby skala czlonu zostala porownywalna z F.mse_loss (srednia po
+    elementach) i zeby to samo beta znaczylo mniej wiecej to samo.
+    """
+    terms = []
+    for n in targets:
+        a1, b1 = now[n]
+        a2, b2 = targets[n]
+        g1 = a1.transpose(1, 2) @ a1              # [B, r, r]
+        g2 = a2.transpose(1, 2) @ a2
+        gx = a1.transpose(1, 2) @ a2
+        h1 = b1 @ b1.transpose(1, 2)
+        h2 = b2 @ b2.transpose(1, 2)
+        hx = b2 @ b1.transpose(1, 2)
+        t11 = (g1 * h1.transpose(1, 2)).sum((1, 2))
+        t22 = (g2 * h2.transpose(1, 2)).sum((1, 2))
+        t12 = (gx * hx.transpose(1, 2)).sum((1, 2))
+        terms.append(((t11 - 2 * t12 + t22) / (a1.shape[1] * b1.shape[2])).mean())
+    return torch.stack(terms).mean()
+
+
 def parse_args():
     p = argparse.ArgumentParser(description="ContinualHyper continual trainer (optional von-Oswald reg)")
     p.add_argument("--config", required=True)
@@ -129,6 +164,13 @@ def main():
     #   "ema" -- srednia wykladnicza parametrow, cel pelznie zamiast skakac.
     # Obie kosztuja JEDNA dodatkowa kopie glowic, niezaleznie od T; przechowywanie gotowych
     # adapterow per koncept byloby magazynem O(T), czyli tym, przeciw czemu jest cala praca.
+    # W jakiej przestrzeni mierzymy odleglosc od kotwicy: "factors" (historyczne, MSE na
+    # x_L i x_R osobno) czy "dw" (na iloczynie, bez wolnosci cechowania -- patrz _reg_dw).
+    # Domyslnie factors, zeby wszystkie dotychczasowe configi odtwarzaly sie co do liczby.
+    reg_space = str(reg_cfg.get("space", "factors"))
+    if reg_space not in ("factors", "dw"):
+        raise ValueError(f"reg.space: {reg_space!r}")
+    _reg_fn = _reg_mse if reg_space == "factors" else _reg_dw
     anchor_mode = str(reg_cfg.get("anchor_mode", "rolling"))
     anchor_every = int(reg_cfg.get("anchor_every", 10))
     anchor_ema = float(reg_cfg.get("anchor_ema", 0.9))
@@ -252,7 +294,7 @@ def main():
     unet = bundle.unet
 
     regmsg = (f"von-Oswald reg beta={reg_weight} (lookahead_lr={lookahead_lr}, "
-              f"anchor={anchor_mode}"
+              f"anchor={anchor_mode}, space={reg_space}"
               + (f"/{anchor_every}" if anchor_mode == "era" else
                  f"/{anchor_ema}" if anchor_mode == "ema" else "") + ")"
               if reg_weight > 0 else "NO reg")
@@ -544,7 +586,7 @@ def main():
                 delta = {nm: (-lookahead_lr * gi).detach() for (nm, _), gi in zip(named, g)}
                 # Stage 2: anchor the hypernet output at the lookahead params Theta + DeltaTheta.
                 perturbed = {nm: p + delta[nm] for nm, p in named}
-                reg = reg_weight * _reg_mse(manager.lora_from_params(anchors, perturbed), targets)
+                reg = reg_weight * _reg_fn(manager.lora_from_params(anchors, perturbed), targets)
                 g_reg = torch.autograd.grad(reg, params)
                 g_reg_g = None
                 if ground_targets is not None:
