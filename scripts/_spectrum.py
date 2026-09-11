@@ -145,6 +145,12 @@ def one(manager, bundle, ckpt, T, hidden, device):
                 # realnego zroznicowania adapterow. Ta liczba jej nie widzi.
                 "dw99": eff_rank_gram(_center(dw_gram(x_L, x_R)), 0.99),
                 "dw95": eff_rank_gram(_center(dw_gram(x_L, x_R)), 0.95),
+                # Sila adaptera: sredni ||dW||_F na element, po konceptach. Diagonala Grama
+                # to dokladnie ||dW_i||_F^2, wiec nic nie kosztuje. Rozroznia dwie zupelnie
+                # rozne awarie kotwicy: "emituje slabsze adaptery" (skala) od "emituje inne"
+                # (kierunek). Mnozymy przez 1000, zeby liczba byla czytelna w tabeli.
+                "dw_mag": float(1000.0 * (dw_gram(x_L, x_R).diagonal()
+                                          / (x_L.shape[1] * x_R.shape[2])).sqrt().mean()),
             })
 
     def med(k):
@@ -159,6 +165,8 @@ def one(manager, bundle, ckpt, T, hidden, device):
               "basis_L99", "basis_R99", "dw99", "dw95"):
         v = [r[k] for r in rows]
         print(f"{k:>10} {med(k):8d} {min(v):5d} {max(v):5d}")
+    mg = sorted(r["dw_mag"] for r in rows)
+    print(f"{'dw_mag':>10} {mg[len(mg) // 2]:8.3f} {mg[0]:5.3f} {mg[-1]:5.3f}   (x1000)")
     print(f"\nwykorzystanie gardla (mediana hidden_L / {cap}): "
           f"{med('hidden_L') / cap:.1%}")
 
