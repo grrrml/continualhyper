@@ -16,6 +16,7 @@ sigma ~ 0.035 DINO blad standardowy to sigma*sqrt(4/N) = 0.010, czyli wykrywamy 
 Run:  python scripts/_sweep_points.py --n 48 > sweep_points.txt
 """
 import argparse
+import sys
 
 import numpy as np
 
@@ -45,6 +46,12 @@ def main():
     ap.add_argument("--seed", type=int, default=2024)
     ap.add_argument("--prefix", default="p")
     a = ap.parse_args()
+
+    # Wymuszamy konce linii LF. Ten plik jest czytany w petli basha i przekazywany do ssh,
+    # wiec znak powrotu karetki z CRLF trafia do WARTOSCI ostatniego parametru w linii.
+    # Kosztowalo to jedno zadanie, ktore padlo na typowaniu wartosci z doklejonym CR --
+    # z komunikatem, ktory w zaden sposob nie wskazywal na konce linii.
+    sys.stdout.reconfigure(newline=chr(10))
 
     rng = np.random.default_rng(a.seed)
     u = lhs(a.n, len(SPACE), rng)
