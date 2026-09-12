@@ -48,7 +48,11 @@ class ContinualHyperManager(nn.Module):
 
         tc = task_cond or {}
         self.task_cond_enabled = bool(tc.get("enabled", False)) and n_tasks > 0
-        self.preserve_norm = bool(tc.get("preserve_norm", True))
+        self.preserve_norm = bool(tc.get("preserve_norm", True))   # NO-OP, patrz condition()
+        # To, czym `preserve_norm` mialo byc: przeskalowanie reszty po Gramie-Schmidcie z powrotem
+        # do normy SPRZED rzutowania. Osobna flaga, zeby nie zmieniac znaczenia 55 istniejacych
+        # configow z `preserve_norm: true`, ktorych wyniki powstaly z no-opem.
+        self.key_renorm = bool(tc.get("key_renorm", False))
         self.learn_v = bool(tc.get("learn_v", True))    # False -> V_t stays at ones (pure GS)
         # `key_dim` replaces the CLIP-pooled key by a random vector of that size. The content of
         # the key is irrelevant (ablated); what matters is that the keys end up orthogonal. Random
@@ -465,9 +469,22 @@ class ContinualHyperManager(nn.Module):
         n_prev = min(int(self.basis_count.item()), int(task_idx))
         if n_prev > 0:
             basis = self.ortho_basis[:n_prev].to(h.dtype)                 # [n, D]
+            n0 = h.norm(dim=-1, keepdim=True)          # norma PRZED rzutowaniem
             h = h - (h @ basis.t()) @ basis
             if self.preserve_norm:
+                # UWAGA: to jest NO-OP i taki zostaje. `h / ||h|| * ||h||` dzieli i mnozy przez te
+                # sama norme PO rzutowaniu, wiec zwraca h bez zmian. 55 configow ma tu `true`,
+                # a ich wyniki powstaly z tym no-opem -- naprawienie tej galezi w miejscu
+                # uczynilobyz nich nieodtwarzalne. Zamierzone zachowanie zyje pod `key_renorm`.
                 h = h / h.norm(dim=-1, keepdim=True).clamp_min(1e-8) * h.norm(dim=-1, keepdim=True)
+            if self.key_renorm:
+                # Gram-Schmidt odejmuje jeden wymiar na zadanie, wiec reszta kurczy sie jak
+                # sqrt(key_dim - k): zmierzone 11.3 przy k=0 i mediana 9.9 przy 50 zadaniach,
+                # a przy T=90 byloby 6.2. Bez tego glowica widzi dla poznych konceptow wejscie
+                # systematycznie mniejsze niz dla wczesnych. Skalujemy z powrotem do normy
+                # SPRZED rzutowania -- kierunek zostaje ortogonalny, zmienia sie tylko dlugosc.
+
+                h = h / h.norm(dim=-1, keepdim=True).clamp_min(1e-8) * n0
         # placement AFTER the projection: identity stays orthogonal across tasks (that is what
         # GS is for), while the box code is DELIBERATELY shared -- same box, same modulation.
         # Adding it earlier would let GS project the box component out, more so for later tasks.
