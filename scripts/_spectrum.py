@@ -119,6 +119,15 @@ def one(manager, bundle, ckpt, T, hidden, device):
             manager.cond_latent = None
         dummy = torch.zeros(1, int(bundle.clip_hidden_size), device=device)
         C = torch.cat([manager.condition(dummy, k, use_prompt_mod=False) for k in range(T)], 0)
+        # Normy kluczy. Zadanie 0 jest jedyne, ktorego klucz NIE przechodzi przez Grama-Schmidta
+        # (nie ma jeszcze bazy, wzgledem ktorej rzutowac), wiec zachowuje pelny kierunek pooled,
+        # a kazdy nastepny jest reszta po odjeciu poprzednich i z definicji krotszy. Jesli ta
+        # roznica jest duza, glowica widzi dla konceptu 0 wejscie z innego zakresu niz dla
+        # reszty -- kandydat na wytlumaczenie, czemu wlasnie on traci 28.7% DINO, gdy pozostale
+        # z jego dziesiatki traca 6-13%.
+        kn = C.norm(dim=-1)
+        print("  normy kluczy: " + " ".join(f"{i}:{v:.3f}" for i, v in enumerate(kn[:12].tolist()))
+              + (f" ... mediana(1..{T-1}) {kn[1:].median():.3f}" if T > 12 else ""), flush=True)
 
         rows = []
         for name in manager.layer_names:
