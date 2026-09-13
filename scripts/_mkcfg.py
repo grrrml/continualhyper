@@ -65,7 +65,9 @@ def main():
 
     for item in a.set:
         path, _, raw = item.partition("=")
-        path, raw = path.strip(), raw.strip()   # '' z CRLF nigdy nie powinien dojsc do typowania
+        # Przycinamy biale znaki: znak powrotu karetki z pliku CRLF nigdy nie powinien
+        # dojsc do typowania wartosci.
+        path, raw = path.strip(), raw.strip()
         parts = path.split(".")
         # Szukamy liniowo po wcieciach: config jest plaski (sekcja + klucze), wiec nie
         # potrzebujemy parsera YAML, a bez niego skrypt dziala takze tam, gdzie nie ma pyyaml.
