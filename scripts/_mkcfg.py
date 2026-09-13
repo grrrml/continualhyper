@@ -57,11 +57,16 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--name", default=None,
+                    help="nazwa punktu (output_dir i wandb). Domyslnie z nazwy pliku --out, "
+                         "ale runner zapisuje config jako <katalog>/config.yaml, wiec MUSI "
+                         "podac nazwe jawnie -- inaczej wszystkie punkty pisza do "
+                         "outputs/sweep/config i ewaluacja nie znajduje checkpointow")
     ap.add_argument("--set", nargs="*", default=[], metavar="SCIEZKA=WARTOSC")
     a = ap.parse_args()
 
     lines = open(a.base, encoding="utf-8").read().split("\n")
-    name = os.path.splitext(os.path.basename(a.out))[0]
+    name = a.name or os.path.splitext(os.path.basename(a.out))[0]
 
     for item in a.set:
         path, _, raw = item.partition("=")
