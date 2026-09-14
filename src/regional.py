@@ -219,11 +219,18 @@ class RegionalSelfAttnProcessor:
     """
 
     def __init__(self, boxes, leak: float = 0.0, strength: Optional[float] = None,
-                 manager=None):
+                 manager=None, max_side: int = 0):
         """`manager` (opcjonalny): gdy podany, ograniczenie zyje tylko dopoki
         `manager.ground_gain > 0`, czyli dzieli harmonogram z kappa. Bez tego twarda izolacja
         w poznych krokach zjada teksture i spojnosc oswietlenia."""
+        """`max_side`: separacja dziala tylko na mapach o boku <= max_side (0 = wszedzie).
+
+        Ta sama lekcja, ktora `GroundedAttnProcessor` ma juz zapisana dla kappa: uklad
+        rozstrzyga sie na mapach 8/16, a kolor i tekstura na 32/64. Ciecie samo-uwagi na
+        mapie 64 tnie teksture, a nie uklad -- i wtedy podmioty owszem sie rozdzielaja, ale
+        obraz wychodzi przesycony i pasiasty (zmierzone 2026-09-14, punkt s2_l0)."""
         self.boxes = [b for b in boxes if b is not None]
+        self.max_side = int(max_side)
         self.leak = float(leak)
         self.strength = strength
         self.manager = manager
@@ -234,6 +241,9 @@ class RegionalSelfAttnProcessor:
         if key in self._cache:
             return self._cache[key]
         side = int(round(n ** 0.5))
+        if self.max_side and side > self.max_side:   # patrz docstring: tylko mapy ukladu
+            self._cache[key] = None
+            return None
         bias = None
         # >= 1, nie >= 2: dla JEDNEJ ramki ta sama logika daje dokladnie to, czego trzeba --
         # `same` to wnetrze-wnetrze, `free` to tlo-tlo, a wnetrze<->tlo jest karane. Wartownik
@@ -310,14 +320,16 @@ def set_regional(unet, regions, strength=None, collect: bool = False,
     return n
 
 
-def set_regional_self(unet, boxes, leak: float = 0.0, strength=None, manager=None) -> int:
+def set_regional_self(unet, boxes, leak: float = 0.0, strength=None, manager=None,
+                      max_side: int = 0) -> int:
     """Install regional SELF-attention on attn1; `boxes=None` restores defaults."""
     from diffusers.models.attention_processor import AttnProcessor
     n = 0
     for name, mod in unet.named_modules():
         if name.endswith("attn1") and hasattr(mod, "set_processor"):
             mod.set_processor(AttnProcessor() if not boxes
-                              else RegionalSelfAttnProcessor(boxes, leak, strength, manager))
+                              else RegionalSelfAttnProcessor(boxes, leak, strength, manager,
+                                                             max_side))
             n += 1
     return n
 

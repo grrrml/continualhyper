@@ -66,9 +66,13 @@ def parse_args():
     ap.add_argument("--ground", type=int, default=0,
                     help="1 = dolacz nasz grounding GSA zaadresowany ramka regionu")
     ap.add_argument("--self_grid", default="",
-                    help="tryb single: punkty MIEKKIEJ separacji attn1 jako 'sila:przeciek' "
-                         "po przecinku, np. '0:0,4:0,8:0,4:0.5'. Sila w jednostkach logitu, "
-                         "0 = bez separacji. Kazdy punkt do wlasnego podkatalogu")
+                    help="tryb single: punkty MIEKKIEJ separacji attn1 jako "
+                         "'sila:przeciek:max_bok' po przecinku, np. '2:0:16,1:0:32,0.5:0:0'. "
+                         "Sila w jednostkach logitu (0 = bez separacji), max_bok ogranicza "
+                         "kare do map ukladu (0 = wszystkie). Punkt do wlasnego podkatalogu")
+    ap.add_argument("--boot_grid", default="",
+                    help="tryb unp1: wartosci --bootstrap po przecinku, np. '0,4,8'. Szare "
+                         "tlo w bootstrapie wychodzi na obrazie, wiec to jest oś do zmiatania")
     ap.add_argument("--self_sched", type=float, default=0.5,
                     help="frakcja krokow, przez ktore zyje separacja attn1")
     ap.add_argument("--res", type=int, default=0, help="0 = natywna dla backbone'u")
@@ -222,15 +226,23 @@ def main():
                     else int(cfg.get("resolution", 1024)))
     rs = None if a.regional_steps < 0 else a.regional_steps
 
-    if a.self_grid:
-        points = [(float(x.partition(":")[0]), float(x.partition(":")[2] or 0.0))
-                  for x in a.self_grid.split(",") if x.strip()]
-    else:
-        points = [(0.0, 0.0)]
-    graded = bool(a.self_grid)
+    def _pt(x):
+        f = (x.split(":") + ["0", "0"])[:3]
+        return float(f[0]), float(f[1] or 0), int(float(f[2] or 0))
 
-    def tag(st, lk):
-        return "base" if st <= 0 else f"s{st:g}_l{lk:g}"
+    if a.self_grid:
+        points = [(_pt(x), a.bootstrap) for x in a.self_grid.split(",") if x.strip()]
+    elif a.boot_grid:
+        points = [((0.0, 0.0, 0), int(x)) for x in a.boot_grid.split(",") if x.strip()]
+    else:
+        points = [((0.0, 0.0, 0), a.bootstrap)]
+    graded = bool(a.self_grid or a.boot_grid)
+
+    def tag(pt, boot):
+        if a.boot_grid:
+            return f"b{boot}"
+        st, lk, sres = pt
+        return "base" if st <= 0 else f"s{st:g}_l{lk:g}_r{sres}"
 
     for s, regions in plan:
         print(f"\n[{s['id']}] ITP '{s['itp']}'", flush=True)
@@ -257,8 +269,9 @@ def main():
                              "box": r["box"],
                              "token_mask": tm if cfg.get("token_mask_lora") else None})
 
-        for st, lk in points:
-            d = os.path.join(a.out, tag(st, lk), s["id"]) if graded \
+        for pt, boot in points:
+            st, lk, sres = pt
+            d = os.path.join(a.out, tag(pt, boot), s["id"]) if graded \
                 else os.path.join(a.out, s["id"])
             os.makedirs(d, exist_ok=True)
             draw_layout(s, regions, os.path.join(d, "layout.png"))
@@ -272,9 +285,10 @@ def main():
                          "config": a.config, "ckpt": a.ckpt, "commit": commit,
                          "backbone": str(cfg.get("sd_model_id", "")), "resolution": res,
                          "steps": a.steps, "guidance_scale": a.cfg, "alpha": a.alpha,
-                         "lora_scale": a.scale, "bootstrap_steps": a.bootstrap,
+                         "lora_scale": a.scale, "bootstrap_steps": boot,
                          "regional_steps": rs, "ground": bool(a.ground),
                          "self_strength": st, "self_leak": lk,
+                         "self_res": sres or None,
                          "self_sched": a.self_sched if st > 0 else None,
                          "scheduler": "DDIM", "negative_prompt": NEG,
                          "seeds": [a.seed0 + i for i in range(a.n)],
@@ -298,17 +312,18 @@ def main():
                                                 guidance_scale=a.cfg, height=res, width=res,
                                                 generator=g, uncond_pooled=up,
                                                 ground=bool(a.ground), self_strength=st,
-                                                self_leak=lk, self_sched=a.self_sched)
+                                                self_leak=lk, self_sched=a.self_sched,
+                                                self_res=sres)
                 else:
                     img = compose_sample_regions(bundle, manager, regs, gh, uh, gp,
                                                  num_inference_steps=a.steps,
                                                  guidance_scale=a.cfg, alpha=a.alpha,
                                                  height=res, width=res, generator=g,
                                                  regional_steps=rs,
-                                                 bootstrap_steps=a.bootstrap,
+                                                 bootstrap_steps=boot,
                                                  uncond_pooled=up, ground=bool(a.ground))
                 save_image(img[0], os.path.join(d, f"{i}.png"))
-            print(f"    [{tag(st, lk)}] {a.n} obrazow -> {d}", flush=True)
+            print(f"    [{tag(pt, boot)}] {a.n} obrazow -> {d}", flush=True)
     print("\nDONE", flush=True)
 
 

@@ -318,6 +318,7 @@ def compose_sample_single(
     height: Optional[int] = None, width: Optional[int] = None, generator=None, scheduler=None,
     uncond_pooled: Optional[torch.Tensor] = None, ground: bool = False,
     self_strength: float = 0.0, self_leak: float = 0.0, self_sched: float = 0.5,
+    self_res: int = 0,
 ):
     """JEDNO przejscie UNetu na krok. Koszt NIEZALEZNY od liczby komponowanych konceptow --
     to jest ta wlasciwosc, ktora niesie teze pracy; `compose_sample_regions` (ich rown. 4-5)
@@ -349,6 +350,10 @@ def compose_sample_single(
     jest BEZCZYNNE (kazda wartosc ponizej 1 to po softmaxie -inf; zmierzone 2026-08-31:
     leak=0.5 dal liczby identyczne z leak=0.0). Czyli werdykt "izolacja attn1 niszczy
     generacje" dotyczy TWARDEJ izolacji, a miekka nie ma ani jednego pomiaru.
+
+    `self_res`: separacja dziala tylko na mapach o boku <= self_res (0 = wszedzie). Uklad
+    rozstrzyga sie na mapach 8/16, tekstura na 32/64 -- ciecie attn1 na mapie 64 rozdziela
+    podmioty, ale zostawia obraz przesycony i pasiasty.
 
     `self_sched`: separacja zyje tylko przez poczatkowa frakcje krokow (uklad rozstrzyga sie
     przy wysokim szumie, a ciecie attn1 w poznych krokach zjada teksture). Realizowane przez
@@ -395,7 +400,8 @@ def compose_sample_single(
     sep = float(self_strength) > 0
     if sep:
         set_regional_self(bundle.unet, [r["box"] for r in regions], leak=float(self_leak),
-                          strength=float(self_strength), manager=manager)
+                          strength=float(self_strength), manager=manager,
+                          max_side=int(self_res))
     try:
         steps = list(scheduler.timesteps)
         for i, t in enumerate(steps):
