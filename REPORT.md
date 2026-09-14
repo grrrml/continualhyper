@@ -2,7 +2,7 @@
 
 > Żywy dokument-pamięć projektu: syntetyczny obraz "gdzie jesteśmy i skąd to wiemy".
 > Aktualizowany po każdym domknięciu wątku (werdykt, faza, decyzja ramowa).
-> Szczegółowy dziennik pomiarów i odrzuceń: `assets/STATUS.md`. Stan na: **2026-09-07**.
+> Szczegółowy dziennik pomiarów i odrzuceń: `assets/STATUS.md`. Stan na: **2026-09-14**.
 
 ---
 
@@ -788,31 +788,233 @@ przy starcie, więc push zmieniłby kod czekających zadań pod starym `run-info
 - Adaptery nieskompresowalne (4 osie, bez kolana); encoder CLIP przyczynowy; klucz semantyczny
   zbędny (treść klucza nieistotna — wystarczy ortonormalność).
 
+## 5b. Faza T — skalowanie do 50 konceptów (2026-09-10…14)
+
+**Strumień.** `configs/phaseT/T50_mixed.yaml`: zadania 0–9 to dziesiątka CIFC **bitowo identyczna**
+z `P_paper` (ta sama kolejność, te same hiperparametry), zadania 10–49 to 40 konceptów
+CustomConcept101 z captionami BLIP w reżimie CIFC. Wykluczone: `pet_cat1` i `plushie_teddybear`
+(md5-identyczne z CIFC) oraz wszystkie `scene_*`. Punkt T=10 tej krzywej **musi** odtworzyć
+headline — i odtwarza.
+
+### 5b.1 Krzywa przy stałej skali s=0.45 (średnia po konceptach 0..k)
+
+| T | TA | IA | DINO |
+|---|---|---|---|
+| 10 | 0.7483 | 0.8011 | 0.6253 |
+| 20 | 0.7583 | 0.7397 | 0.5206 |
+| 30 | 0.7633 | 0.7358 | 0.5266 |
+| 40 | 0.7571 | 0.7338 | 0.5185 |
+| 50 | 0.7628 | 0.7171 | 0.4929 |
+
+Cały spadek siedzi w skoku 10→20, czyli tam, gdzie wchodzi CC101; między 20 a 40 jest **płasko**
+(−0.006 IA, −0.002 DINO). To zmiana składu zbioru, nie zapominanie.
+
+**Rozkład luki T=10→50** (−0.084 IA / −0.132 DINO). Te same 10 konceptów CIFC ocenione
+checkpointem 49 dają IA 0.7471 / DINO 0.5501, więc:
+- **zapominanie/dryf na ustalonym zbiorze:** −0.054 IA / −0.075 DINO
+- **zmiana składu zbioru** (40 trudniejszych konceptów CC101): −0.030 IA / −0.057 DINO
+
+Czterdziestka CC101 wychodzi na IA 0.710 / DINO 0.479, czyli −0.037 / −0.071 poniżej dziesiątki
+CIFC przy tym samym checkpoincie. To 36% luki w IA i 43% w DINO, i **żadna metoda CL tego nie
+ruszy** — w pracy trzeba raportować krzywą na jednorodnym podzbiorze albo nazwać ten człon wprost.
+
+**Zapominanie na ustalonych podzbiorach** (s=0.45) rozkłada się skrajnie nierówno:
+
+| podzbiór | horyzont | ΔIA | ΔDINO |
+|---|---|---|---|
+| CIFC 0–9 | T=10→50 (40 zadań) | −0.054 | −0.075 |
+| CC101 10–19 | T=20→50 (30 zadań) | −0.000 | −0.015 |
+| CC101 20–29 | T=30→50 (20 zadań) | −0.013 | −0.026 |
+
+Na porównywalnym horyzoncie 30 zadań CIFC traci 3× więcej niż CC101 nawet po znormalizowaniu na
+poziom wyjściowy (12% wobec 3.5%). Hipoteza robocza: człon kohortowy śledzi **o ile urósł strumień
+od punktu odniesienia** (CIFC 5×, CC101 10–19 2.5×), czyli rozcieńczanie pojemności, nie długość
+łańcucha kotwic.
+
+**Koncept zerowy jest anomalią.** Per koncept, ΔDINO T=10→50: `dog` **−28.7%**, `dog2` −12.5%,
+`drawing` −13.2%, `duck_toy` −12.0%, `cat2` −10.9%, reszta −6…−9%. Pozycje 1–9 **nie mają żadnego
+uporządkowania** — to nie jest „im starszy, tym gorzej", tylko konkretnie zadanie 0. Style wypadają
+**lepiej** niż obiekty (−9.6% wobec −12.3%), więc „style są kruche" odpada. Przyczyna niewyjaśniona;
+sprawdzone i odrzucone: geometria klucza (patrz 5b.4) i zimny emiter (`dog` ma **najwyższe** DINO
+z dziesiątki przy T=10, więc nie jest niedouczony). Jedyny czysty test to ta sama pięćdziesiątka
+w innej kolejności — nie zrobione.
+
+### 5b.2 PRÓG SZUMU — dotyczy wstecz wszystkiego przy T=50
+
+Trzy ziarna **identycznej** konfiguracji bazowej (2024/2025/2026), wszystkie w pełni interpolowane
+do wspólnego TA=0.747:
+
+| wielkość | średnia | sd | rozstęp |
+|---|---|---|---|
+| IA @T=10 | 0.8025 | **0.0006** | 0.0012 |
+| DINO @T=10 | 0.6296 | **0.0037** | 0.0069 |
+| IA @T=50 | 0.7748 | 0.0034 | 0.0066 |
+| DINO @T=50 | 0.5737 | **0.0133** | 0.0242 |
+| ΔDINO (zapominanie) | −0.0560 | **0.0161** | 0.0310 |
+
+**T=10 jest praktycznie deterministyczne, T=50 nie.** Szum narasta wzdłuż strumienia: 50
+sekwencyjnych zadań kumuluje drobne różnice. Konsekwencje, wszystkie wsteczne:
+- każde twierdzenie o headlinie wobec CIDM (T=10) jest twarde — sd 0.0006 na IA;
+- każde twierdzenie o T=50 wymaga 3 ziaren albo efektu > 0.03;
+- **najgorsza jest sama różnica ΔDINO** (sd 0.0161), bo odejmuje dwie zaszumione liczby.
+  Raportować **poziom DINO@T=50**, nie deltę;
+- wcześniejszy wniosek, że β=300 daje „−15% zapominania" (0.0323 wobec 0.0380), **opisywał szum**.
+
+### 5b.3 Warianty metody — dziewięć prób, jedna wygrana
+
+Wszystko przy zrównanym TA=0.747, te same 10 konceptów CIFC, odczyt interpolowany po skalach
+(`scripts/_curve.py`). Baza = ziarno 2024.
+
+| wariant | DINO @T=10 | DINO @T=50 | werdykt |
+|---|---|---|---|
+| **baza** (rolling, β=100, czynniki) | 0.6269 | 0.5890 | — |
+| **key_renorm** | 0.6282 | **0.5965** | **jedyna wygrana**, patrz 5b.5 |
+| ground_anchor | 0.6394 | 0.6001 | poziom wyżej, **nachylenie bez zmian** |
+| β=300 (czynniki) | 0.6219 | 0.5896 | w granicach szumu |
+| q192h128 (gardło 128, baza 192) | 0.5960 | 0.5511 | gorsze też przy T=10 |
+| kotwica na ΔW, β=100 | 0.6169 | 0.4499 | za słaby więz |
+| kotwica na ΔW, β=500 | 0.6260 | 0.5051 | lepiej, wciąż daleko |
+| era N=10, β=100 | 0.4232 | 0.3823 | adapter zduszony |
+| ema 0.9, β=100 | 0.4912 | 0.4286 | jw. |
+| era β=35 / ema β=40 | 0.525 / 0.578 | 0.362 / 0.429 | poziom wraca, nachylenie się psuje |
+| q64h128 (baza wiąże) | 0.5219 | 0.2344 | kontrola, potwierdza pomiar `basis_L99` |
+
+**Kotwice era/ema są zamknięte z obu stron β.** Przy β=100 duszą magnitudę adaptera 2.4–2.9×
+(`dw_mag`: rolling 9.37/12.33, era 3.23/5.53, ema 3.84/5.05 przy T=10/50) przy prawie nienaruszonym
+zróżnicowaniu (`dw99` przy T=50: rolling 47, ema 47, era 42). Ale **przywrócenie magnitudy nie
+przywraca jakości**: przy s=1.5 (3.3× skali) era daje DINO 0.452 wobec 0.625 bazy, a jej krzywa
+kompromisu biegnie **wstecz** — zejście z TA obniża IA. Przy β dobranym pod magnitudę (35/40)
+poziom wraca, ale nachylenie się psuje. Więz bezwzględny jest albo za ciasny, albo za luźny.
+
+**Kotwica na ΔW: argument poprawny, wniosek odwrotny.** Rozkład `dW = x_L @ x_R` nie jest
+jednoznaczny — `(x_L R, R^-1 x_R)` daje tę samą funkcję — więc MSE na czynnikach karze też czystą
+zmianę cechowania. Zweryfikowane liczbowo: reparametryzacja zostawiająca `dW` bez zmian (max
+różnica 9.5e-07) przesuwa `_reg_mse` z 3.974 na 10.658, a `_reg_dw` zostaje na 7.643927 co do
+ostatniej cyfry. Argument z LoRAGen (ICLR 2026, `tsinghua-fib-lab/LoRAGen`). **Ale empirycznie
+kara na czynnikach wygrywa przy każdym β**, i to jest wynik: przypina więcej niż samą funkcję,
+i to nadmiarowe przypięcie kupuje zatrzymanie starych konceptów. Implementacja: `reg.space`,
+domyślnie `factors`; `_reg_dw` liczy odległość bez materializowania `dW` (tożsamość śladu,
+koszt O(r²(in+out)), zgodność z rachunkiem wprost 0.0e+00).
+
+### 5b.4 Pomiary architektury (bez GPU-godzin, `scripts/_spectrum.py`)
+
+**Rząd efektywny emitowanych adapterów** (99% energii, mediana po 64 warstwach, macierz centrowana
+po konceptach). Liczony na `dW` przez macierz Grama — **liczony na `x_L` jest skażony cechowaniem
+i zaniża wynik**:
+
+| T | sufit danych (T−1) | `dw99` | `lora_L99` (czynniki) | % sufitu architektury (50) |
+|---|---|---|---|---|
+| 10 | 9 | 9 | 9 | 18% |
+| 30 | 29 | 28 | 27 | 56% |
+| 50 | 49 | **47** | 38 | **94%** |
+
+Koncepty **nie zlewają się** — 47 z 49 możliwych kierunków. Ale `head_hidden=50` jest zajęte
+w 94%. Pierwotny odczyt (38, „wykorzystanie spada do 78%") był artefaktem cechowania.
+**Mimo to poszerzenie gardła nie pomogło** (`q192h128` gorsze także przy T=10), więc wysokie
+zajęcie nie znaczy, że to ono jest ograniczeniem.
+
+**Zapotrzebowanie na bazę** (`basis_L99` — ile wymiarów `R^in` zajmują łącznie kolumny `x_L`):
+39 przy T=10, 104 przy T=30, **144 przy T=50**. Dlatego `basis_q=64` wiąże mocniej niż samo gardło
+i `q64h128` wypadło najgorzej z całej serii. To domyka też Fazę F: q=32 przy zapotrzebowaniu 40
+kosztowało −0.057, q=128 tylko −0.012.
+
+**Normy kluczy.** Gram-Schmidt odejmuje jeden wymiar na zadanie, więc reszta kurczy się jak
+`sqrt(key_dim − k)`: zmierzone 11.31 przy k=0 i mediana 9.92 przy 50 zadaniach. Ekstrapolacja:
+6.2 przy T=90 i **dokładnie 0 przy T = key_dim = 128** — twarda ściana architektury, niezależna od
+`head_hidden`. Do benchmarku T=90 trzeba podnieść `key_dim` (koszt: tylko pierwsza warstwa głowic,
++3 M parametrów). Klucz zadania 0 **nie jest** odstępstwem (11.135 wobec 11.326 dla zadania 1),
+więc geometria klucza nie tłumaczy anomalii `dog`.
+
+### 5b.5 `preserve_norm` był no-opem — `key_renorm` jest jego naprawą
+
+`manager.py` liczył `h / ||h|| * ||h||`, czyli dzielił i mnożył przez **tę samą** normę po
+rzutowaniu: zwracał `h` bez zmian. Docstring mówi, że miało skalować „back to ||h||", czyli do
+normy **sprzed** Grama-Schmidta. Flaga nie robiła nic, więc wcześniejszy wniosek „preserve_norm
+nie pomaga" opisywał szum.
+
+**Nie naprawione w miejscu:** 55 configów ma `preserve_norm: true` i ich wyniki powstały z no-opem,
+więc zmiana znaczenia flagi uczyniłaby je nieodtwarzalnymi z commita. Zamierzone zachowanie żyje
+pod nową flagą `key_renorm`, domyślnie wyłączoną.
+
+**Wynik, porównanie sparowane** (to samo ziarno = ta sama kolejność danych i inicjalizacja):
+
+| ziarno | baza DINO@T=50 | key_renorm | różnica |
+|---|---|---|---|
+| 2024 | 0.5890 | 0.5965 | **+0.0075** |
+| 2025 | 0.5672 | 0.5762 | **+0.0090** |
+
+Dwie pary, zgodny znak, praktycznie ta sama wielkość — rozrzut różnicy 0.0015 wobec 0.0133
+rozrzutu niesparowanego. Przy T=10 obie pary neutralne (+0.0013, +0.0006), więc bez kosztu
+plastyczności. **Zysk na IA się nie powtórzył** (+0.0106 przy 2024, +0.0001 przy 2025) — powtarzalny
+jest tylko DINO. Trzecie ziarno w toku. Zastrzeżenie: to leczy skalę, nie utracone kierunki —
+przy T = key_dim reszta jest zerowa i nie ma czego normalizować.
+
+### 5b.6 Ewaluacja na wszystkich 50 konceptach i przekątna
+
+Checkpoint końcowy, 10 000 obrazów na skalę: s=0.45 → TA 0.7628 / IA 0.7171 / DINO 0.4929;
+s=0.60 → TA 0.7374 / IA 0.7504 / DINO 0.5414.
+
+Przekątna (każdy koncept oceniony checkpointem tuż po swojej nauce, `--diagonal` w `gen_cifc`):
+s=0.45 → TA 0.7499 / IA 0.6669 / DINO 0.4101; s=0.60 → TA 0.7025 / IA 0.7783 / DINO 0.5309.
+Po zrównaniu TA na 0.744 przekątna daje 0.681 IA / 0.425 DINO wobec końcowych 0.742 / 0.529, czyli
+**+0.061 IA i +0.104 DINO na korzyść checkpointu końcowego**. Nie wpisywać tego jako „ujemnego
+zapominania": przekątna ma wadę konstrukcyjną, bo koncept 0 jest oceniany siecią po 400 krokach
+treningu w ogóle. Wczesne wpisy mierzą „ledwo nauczoną sieć", nie „świeżo nauczony koncept".
+
+---
+
 ## 6. W toku / otwarte
 
-**W kolejce (Helios, 2026-09-07) — każde rozstrzyga jedno pytanie:**
-- **Po przeglądzie SDXL (commit `1686063`, wysłane 2026-09-07 wieczór):** (a) **22098594**
-  `X_sdxl_ground_800aug` eval @s=0.4/0.5/0.6 → `eval10f_uc/` z poprawioną gałęzią uncond — efekt
-  samej poprawki (1) wobec istniejącego `eval10f/` (ten sam checkpoint, te same ziarna);
-  (b) retrening **22098601** `X_sdxl_base800` (**czy sufit tekstowy istnieje** — baza bez groundingu
-  przy 800, z poprawnym mikro-warunkowaniem) + evale 22099013/23/27 (s=0.4/0.5/0.7) i **22098605**
-  `X_sdxl_best_nu` (fp32 logity + `paste_no_upscale`) + evale 22099028/30/32 (s=0.4/0.5/0.6),
-  łańcuchy na `afterany`; (c) potem instrument umiejscowienia SDXL na nowym `best_nu` i κ=0.5/0.7 —
-  anulowane 22094511 / 22087569/70 liczyły stary checkpoint. `X_sdxl_1600` evale 22077405/07
-  anulowane (wynik znany, −1.49; 1600 nasyca się).
+**W kolejce (Helios, 2026-09-14):**
+- **Sweep 47 punktów, `outputs/sweep/pNNN`** — tablice `22359606` (23 punkty × 400 kroków, limit
+  6:30, throttle 12) i `22359607` (24 × 800 kroków, limit 12:00, throttle 12). Osiem wymiarów
+  losowanych Latin Hypercube (`scripts/_sweep_points.py`): `reg.space`, `log β` (50–10000),
+  `key_dim` {128,256,512}, `rank` {2,4,8}, `weight_decay` {0,1e-4,1e-3,1e-2}, `steps_per_task`
+  {400,800}, `learn_v`, `scale_cond`. Baza to **niezmieniony `T50_mixed`** (bez `key_renorm`),
+  żeby każdy punkt był porównywalny z liczbami w pracy. Koniec ~25 h od startu.
+- Trzecie ziarno `key_renorm` (`22397640`) — domyka decyzję z 5b.5.
+- Końce krzywej dla `ΔW` przy β=2500 i 10000 (`22397841/42/43/54`) — czy krzywa
+  0.167 → 0.121 → ? dalej schodzi do bazy, czy płaskowacieje.
+
+**Jak czytać sweep (ustalone zawczasu, żeby nie było doboru po fakcie).** Nie „który punkt wyszedł
+najlepiej" — maksimum z 47 losowań z czystego szumu leży średnio 2.4σ ponad średnią, czyli +0.029
+DINO wyłącznie z przypadku. Decyzja idzie z **efektów głównych**: model liniowy po ośmiu osiach
+dopasowany najmniejszymi kwadratami na wszystkich punktach naraz (przy LHS osie są prawie
+ortogonalne). Przy `σ_total ≈ 0.035` błąd standardowy to `0.29 σ_total ≈ 0.010`, czyli wykrywamy
+efekty od **~0.020**. Działamy tylko na tym, co przekracza 2 SE. Wybór konfiguracji **nigdy nie
+wychodzi wprost ze sweepu** — 3–4 najwyższe punkty idą na dwa dodatkowe ziarna i dopiero sparowane
+porównanie z bazą decyduje. Interakcji przy 48 punktach na 8 osiach nie rozstrzygniemy i tak to
+trzeba raportować.
 
 **Do zrobienia przed wysyłką (ścieżka krytyczna to pisanie, nie kolejka):**
-- Drugie ziarno `P_best` + jego pełna macierz forgettingu (tabela forgettingu w pracy jest
-  wciąż z `erode`).
+- Kompozycja wielokonceptowa — kodu po naszej stronie **nie ma**, doklejamy się do ich obrazów
+  z pracy. `assets/cidm_composition_notes.md` ma już 11 scen z Figure 3/6, prompty przepisane
+  dosłownie z ich źródła TeX i geometrię ramek odczytaną z wektorów w ich PDF-ach. Potok jest
+  niezależny od checkpointu — budować teraz, generować na zwycięskim później.
+- Dwa wiersze porównawcze do Tabeli 2 (podłoga „sam prompt", layout bez treningu) — wymagają
+  najpierw poprawki gałęzi uncond w `RegionalAttnProcessor`.
+- `figures/tradeoff.pdf` przerobiony na liczby z `P_paper`; krzywa skalowania i krzywe na
+  ustalonych podzbiorach z 5b.1 — zero GPU, dane są.
+- Drugie ziarno `P_best` + pełna macierz forgettingu (tabela forgettingu w pracy jest wciąż
+  z `erode`).
 - Trzecie ziarno SDXL wybranego przepisu — bez tego żadne zdanie o SDXL nie ma wagi.
 - Abstract, Introduction, Related work, Limitations, Conclusion — puste `\todo{}`.
 - Transfer w przód — zmierzony, **ani zdania w tekście**.
-- `REPORT.md` → `git commit` (nie commitowany od 2026-09-06).
 
-**Następna wersja (nie ta):** sweep T=35 na CustomConcept101 na obu architekturach; bramka
-`g + h(ramka)` i kotwica wkładu bezramkowego; skalowanie gałęzi przez `s_lora`; Option C
-dwuenkoderowe na SDXL; letterbox z bboxem przez korelację wzorca; L2DM na SDXL (OOM); kompozycja
-wielokonceptowa (ITP/RTP); `R_tail` trzecie ziarno na SD-1.5.
+**Uwaga o headlinie.** Sweep chodzi po T=50, a headline to `P_paper` przy T=10. Parametry
+architektury i treningu stosują się do obu, więc zwycięzca sweepu **może wymusić przetrenowanie
+`P_paper`** i powtórzenie porównania z CIDM (~6 h) oraz regenerację kompozycji. Receptura
+wygrywająca przy T=50 nie musi wygrywać przy T=10 — przy dziesięciu konceptach nie ma presji na
+pojemność. Zwycięzcę weryfikować osobno przy T=10, zanim cokolwiek ruszy w headline; jeśli się nie
+potwierdzi, zostają dwie receptury i trzeba to nazwać wprost.
+
+**Następna wersja (nie ta):** osobny benchmark skalowania na pełnym CustomConcept101 do T=90
+(92 koncepty po odrzuceniu `scene_*` i duplikatów) — jednorodny strumień usuwa człon składu zbioru
+z 5b.1, ale **wymaga większego `key_dim`**, bo przy T=90 zostaje 55% normy klucza, a przy 128
+dokładnie zero. CC101 nie ma ani jednego konceptu stylu, więc taki benchmark byłby wyłącznie
+obiektowy. Dalej: bramka `g + h(ramka)`; skalowanie gałęzi przez `s_lora`; Option C dwuenkoderowe
+na SDXL; letterbox z bboxem przez korelację wzorca; L2DM na SDXL (OOM); `R_tail` trzecie ziarno
+na SD-1.5.
 
 **Nie robić (zmierzone albo rozstrzygnięte):** `share_heads` pod groundingiem (−1.6…−1.9 IA,
 −16 pp placementu); kotwica na gałąź (zamraża transfer w przód);
@@ -820,7 +1022,10 @@ wielokonceptowa (ITP/RTP); `R_tail` trzecie ziarno na SD-1.5.
 tożsamości: 53.6/55.0 wobec 62.3); 1600 kroków (nasyca się); tokeny groundingu bez klucza
 (= GLIGEN bez semantyki, claim (ii) upada); rozdzielanie tożsamości od umiejscowienia przez
 wejście gałęzi (wyciek bierze się z sygnału treningowego, nie z wejścia); podnoszenie rangi /
-szerokości głowicy per warstwa; gonienie wypełnienia kadru pod metrykę.
+szerokości głowicy per warstwa; gonienie wypełnienia kadru pod metrykę; **kotwice era i ema przy
+każdym β** (5b.3); **kotwica na ΔW** (5b.3 — argument poprawny, empirycznie przegrywa);
+**poszerzanie `head_hidden`** (5b.3, gorsze także przy T=10); **`basis_q` poniżej zmierzonego
+`basis_L99`** (5b.4).
 
 ## 7. Infrastruktura (twarde lekcje)
 
@@ -892,6 +1097,44 @@ Heliosa wchodzą z CLI. Wagi torch.hub (detektory) idą do `$SCRATCH/.cache/torc
 nieśledzone symlinki `wandb` i `outputs`, które sam tworzy — a wykluczone są tylko
 `results/logs/data`. Flaga DIRTY straciła więc znaczenie sygnalizacyjne; do naprawy jednym
 wykluczeniem więcej.
+
+
+**Lekcje z fazy T (2026-09-10…14) — wszystkie tego samego rodzaju: działanie na wnioskowaniu tam,
+gdzie weryfikacja kosztuje jedną komendę.**
+
+- **`SKIP_PULL=1` wstawione dla ciszy w logach nie dostarczyło configów** — cztery zadania padły po
+  10 sekundach z `FileNotFoundError`. Ten flag wyłącza jedyny mechanizm transportu kodu.
+- **Plik z punktami sweepu wygenerowany na Windows miał CRLF**, a pętla basha doklejała znak
+  powrotu karetki do **wartości ostatniego parametru w linii**. Komunikat (`'false:bool<CR>'`)
+  w żaden sposób nie wskazywał na końce linii. Ostrzeżenie z `CLAUDE.md` dotyczy `.sh`/`.py`,
+  ale to samo dotyczy **każdego pliku czytanego przez shell**.
+- **Poprawka na CRLF sama wstawiła literalny CR do źródła** — patch pisany przez heredok
+  zamienił escape na prawdziwy znak. Dwa razy, w dwóch plikach. Po każdej łatce: `py_compile`
+  **i** `grep -c $'\r'`, zanim cokolwiek pójdzie na klaster.
+- **Runner nigdy nie przeszedł end-to-end przed postawieniem za nim 47 zadań.** `_mkcfg.py` brał
+  nazwę punktu z `basename(--out)`, a runner zapisuje config jako `<katalog>/config.yaml` — więc
+  **każdy punkt pisałby do `outputs/sweep/config`**. Wykryte po 3 h 20 GPU, na pierwszej metryce.
+- **„Test dymny" trwający tyle co zadanie produkcyjne nie jest testem.** Stąd `SMOKE=1` w
+  `sbatch_sweep.sh`: 5 kroków na zadanie, jedna skala, jeden obraz na prompt.
+- **`grep -c` zwraca kod 1, gdy nie znajdzie dopasowań** — czyli łańcuch
+  `grep -c $'\r' plik && git add && git commit` **cicho pomija commit**, gdy plik jest czysty.
+  Zadanie poszło wtedy na config, którego nie było w repo.
+- **Zależność `afterok` uratowała 47 punktów.** Trzy razy z rzędu smoke padał i tablice nie
+  ruszały. To jedyny mechanizm, który w tej serii zadziałał tak, jak zaplanowano.
+- **Utrata danych: 12 120 obrazów z `phaseP/P_best/eval10f`.** Skrypt pakujący skończył archiwum
+  i skasował oryginały, po czym zerwało się ssh **zanim linia „OK" doszła**. Uznałem tar za obcięty
+  i poleciłem go skasować. Był kompletny — 571 351 040 B / 12 120 plików = 47 141 B na plik, przy
+  typowym `.jpg` 46 212 B. Metryki i checkpointy ocalały, obrazy nie. **Nie wnioskować o stanie
+  artefaktu z tego, czego nie ma w logu — sprawdzić artefakt** (`tar -tf | wc -l`). Skrypt ma teraz
+  budować do `.tar.part` i nadawać właściwą nazwę dopiero po weryfikacji liczby wpisów.
+- **Limity `--time` z pomiaru, nie z oszacowania.** Dwa razy pod rząd smoke padł na limicie, bo
+  przy 5 krokach na zadanie dominuje narzut (50 zapisów checkpointu po 85 MB i próbkowanie do
+  `fresh/`), a nie sam trening.
+- **Inody, nie miejsce, są ograniczeniem `$SCRATCH`.** Przy 4.4% zajętości dysku było 97.8%
+  z miliona inodów. `scripts/_pack_outputs.sh` zwinął 392 000 plików z `phaseP` i `sdxl` do
+  archiwów (obrazy zostają, metryki i checkpointy poza tarem). `sbatch_sweep.sh` kasuje obrazy
+  **od razu po metrykach każdej skali** — punkt trzyma wtedy 2 tys. plików zamiast 14 tys., co
+  pozwala na 24 równoległe punkty zamiast 8.
 
 ## 8. Konwencja aktualizacji
 
