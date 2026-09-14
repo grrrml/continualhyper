@@ -70,6 +70,12 @@ def parse_args():
                          "'sila:przeciek:max_bok' po przecinku, np. '2:0:16,1:0:32,0.5:0:0'. "
                          "Sila w jednostkach logitu (0 = bez separacji), max_bok ogranicza "
                          "kare do map ukladu (0 = wszystkie). Punkt do wlasnego podkatalogu")
+    ap.add_argument("--kappa", type=float, default=-1.0,
+                    help="ground_gain_base; <0 zostawia domyslne 1.0")
+    ap.add_argument("--ground_sched", type=float, default=-1.0,
+                    help="ground_sched_frac, czyli frakcja krokow z aktywnym GSA. UWAGA: "
+                         "nie ustawia tego ani config, ani ten skrypt, wiec domyslnie wychodzi "
+                         "1.0 i grounding leci przez WSZYSTKIE kroki")
     ap.add_argument("--solo", type=int, default=0,
                     help="1 = zamiast kompozycji renderuj KONTROLE JEDNOKONCEPTOWE: kazdy "
                          "region osobno, ta sama ramka, prompt, skala i ziarno. Roznica wobec "
@@ -219,6 +225,10 @@ def main():
             print(f"[compose] wgrano {len(blob['learned_tokens'])} wierszy tokenow", flush=True)
         manager.eval()
         manager.lora_scale = a.scale
+        if a.kappa >= 0:
+            manager.ground_gain_base = a.kappa
+        if a.ground_sched >= 0:
+            manager.ground_sched_frac = a.ground_sched
         if a.ground:
             if not getattr(manager, "ground_cond", False):
                 raise SystemExit("--ground 1 wymaga checkpointu z ground_cond: true")
@@ -310,6 +320,8 @@ def main():
                          "regional_steps": rs, "ground": bool(a.ground),
                          "self_strength": st, "self_leak": lk,
                          "self_res": sres or None, "self_bg_shared": bool(a.self_bg),
+                         "kappa": (a.kappa if a.kappa >= 0 else 1.0),
+                         "ground_sched_frac": (a.ground_sched if a.ground_sched >= 0 else 1.0),
                          "self_sched": sch if st > 0 else None,
                          "scheduler": "DDIM", "negative_prompt": NEG,
                          "seeds": [a.seed0 + i for i in range(a.n)],

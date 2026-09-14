@@ -303,8 +303,14 @@ class RegionalSelfAttnProcessor:
         # Separacja dotyczy galezi WARUNKOWEJ. Predykcja bezwarunkowa ma byc czystym priorem
         # modelu, inaczej roznica CFG przestaje izolowac warunkowanie -- ta sama poprawka co
         # w RegionalAttnProcessor.
+        # Dwie bramki, obie musza byc otwarte. `ground_gain` dzieli harmonogram z kappa
+        # (tak uzywa tego `_ground_iou.py` i tego nie zmieniamy), a `self_sep_gain` jest
+        # WLASNYM harmonogramem separacji -- bez niego przy wlaczonym groundingu separacja
+        # dziedziczyla harmonogram kappa, ktory w configach nie jest ustawiany i wychodzil
+        # na 1.0, czyli separacja lecia przez wszystkie kroki.
         active = self.manager is None or (
             float(getattr(self.manager, "ground_gain", 1.0)) > 0
+            and float(getattr(self.manager, "self_sep_gain", 1.0)) > 0
             and bool(getattr(self.manager, "lora_enabled", True)))
         bias = self._bias(n, q.device, q.dtype)             if (encoder_hidden_states is None and active) else None
         if bias is not None:

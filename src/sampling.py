@@ -399,6 +399,7 @@ def compose_sample_single(
 
     _MISSING = object()
     _prev_gain = getattr(manager, "ground_gain", _MISSING)
+    _prev_sep = getattr(manager, "self_sep_gain", _MISSING)
     if not ground:
         manager.set_ground(None)          # czysci ramke z poprzedniego wywolania
     set_region_kv(bundle.unet, regions, manager, ground)
@@ -410,12 +411,13 @@ def compose_sample_single(
     try:
         steps = list(scheduler.timesteps)
         for i, t in enumerate(steps):
-            if ground or sep:             # harmonogram kappa, jak w ddim_sample
-                frac = i / max(1, len(steps))
-                lim = (float(getattr(manager, "ground_sched_frac", 1.0)) if ground
-                       else float(self_sched))
+            frac = i / max(1, len(steps))
+            if ground:                    # harmonogram kappa, jak w ddim_sample
                 manager.ground_gain = (float(getattr(manager, "ground_gain_base", 1.0))
-                                       if frac < lim else 0.0)
+                                       if frac < float(getattr(manager, "ground_sched_frac", 1.0))
+                                       else 0.0)
+            if sep:                       # WLASNY harmonogram separacji, niezalezny od kappa
+                manager.self_sep_gain = 1.0 if frac < float(self_sched) else 0.0
             inp = scheduler.scale_model_input(latents, t)
             eps_c = bundle.unet(inp, t, encoder_hidden_states=gh,
                                 added_cond_kwargs=ac_g or None).sample
@@ -439,4 +441,9 @@ def compose_sample_single(
                 del manager.ground_gain
         else:
             manager.ground_gain = _prev_gain
+        if _prev_sep is _MISSING:
+            if hasattr(manager, "self_sep_gain"):
+                del manager.self_sep_gain
+        else:
+            manager.self_sep_gain = _prev_sep
     return bundle.decode_latents(latents)
