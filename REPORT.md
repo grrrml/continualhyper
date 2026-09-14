@@ -1068,6 +1068,48 @@ robimy ja rownolegle do sweepu, doklejajac sie do scen z pracy CIDM. Stan:
   `<V1>` na SDXL nie blokuje ani jednej sceny. Wczesniejsze „`F_base` nie potrafi pary
   same-class" dotyczylo JEDNEGO przebiegu ze wspolnym promptem.
 
+**JEDNO PRZEJSCIE vs U+1 — to jest osia calej sprawy (14.09).** Pierwsza wersja potoku szla
+wylacznie `compose_sample_regions`, czyli ICH rownaniem 4-5: `2+U` wywolan UNeta na krok
+(dla naszych scen 4-6). To jest ich model kosztu. Nasza teza to `O(1)` — jeden forward
+hipersieci, potem czysty UNet — wiec figura zrobiona tym torem pokazuje **nasze adaptery
+w ich schemacie probkowania** i sama z siebie kasuje argument kosztowy. Dlatego doszedl
+`--mode single`:
+
+| tryb | wywolan UNeta / krok | co pokazuje |
+|---|---|---|
+| `single` (`compose_sample_single`) | **2**, niezaleznie od U | teze `O(1)` — wiersz do pracy |
+| `unp1` (`compose_sample_regions`) | 2+U | ich schemat, gorna granica i ablacja |
+
+**Protokol wejscia jest w obu ten sam i dokladnie ich**: ITP jako prompt globalny, kazdy RTP
+zakodowany OSOBNO plus ramka. Osobne kodowanie nie jest wygoda, tylko koniecznoscia — CLIP
+jest przyczynowy, wiec w jednym scalonym prompcie drugi span niesie kontekst pierwszego
+(audyt 2885915: drugi span rownoodlegly od obu wzorcow, 0.778 vs 0.779). Sekwencje tekstowe
+nie maja w UNecie ograniczenia dlugosci, wiec U+1 blokow kontekstu miesci sie w jednym
+przebiegu — rozne sa tylko K/V w 16 (SD-1.5) / 70 (SDXL) warstwach attn2, a nie caly UNet.
+
+Tor jednoprzebiegowy to rozszerzony `RegionKVAttnProcessor`. Trzy zmiany:
+- **wstrzyk GSA per region** (`_gsa`, adresowany ramka regionu). Sierpniowy werdykt
+  („regionalna uwaga trasuje tresc, ale nie wymusza liczby podmiotow", region_rewrite
+  redukowal dwa podmioty do jednego) dotyczyl GOLEGO maskowania uwagi i **stoi** — ta sciezka
+  byla testowana poprawnie, bo `_compose_unp1.py --kv 1` odinstalowuje procesor wokol
+  przebiegu uncond, wiec blad z `RegionalAttnProcessor` jej nie dotyczyl. Ale galaz
+  groundingu powstala PO tamtym werdykcie (GO 20.08 wobec kompozycji zaparkowanej 09.08)
+  i jest UCZONA pchac mase konceptu do ramki, czyli robi to, czego samo maskowanie nie umie.
+  To jest strzal, ktorego nigdy nie oddalismy.
+- **bramka `lora_enabled`**, taka sama jak w poprawce wyzej: przebieg uncond widzi czysty
+  negatyw w calym kadrze. Dotad wolajacy musial odinstalowywac procesor recznie wokol
+  kazdego uncond — latwo zapomniec, skutek cichy.
+- **`manager.snapshot_lora`/`restore_lora`**: LoRA jest niezalezna od kroku, wiec liczymy ja
+  raz na koncept i podmieniamy wskaznik cache'a. Bez tego procesor przeliczal cala hipersiec
+  w KAZDEJ warstwie attn2, dla kazdego regionu i kazdego kroku — na SDXL 70 x U x 50 pelnych
+  forwardow hipersieci 87.5 M na jeden obraz.
+
+**Ograniczenie toru jednoprzebiegowego, znac przy czytaniu wynikow:** `RegionKVAttnProcessor`
+liczy `q` globalnie i `to_out` bez adaptera (zachowanie referencyjne Mix-of-Show), wiec dziala
+tam WYLACZNIE tekstowa polowa naszej LoRA (`to_k`/`to_v`), a nasze checkpointy maja delty
+takze na `to_q`/`to_out.0`. Jesli podmioty znow beda sie zlewac, **to jest pierwsza dzwignia
+do sprawdzenia**, a nie dowod, ze jedno przejscie nie dziala.
+
 **Potok jest niezalezny od checkpointu** — zalezne sa tylko same obrazy. Czego brakuje:
 sklejka rysunku, ktora wymaga decyzji, ktore sceny i skad panele CIDM
 (patrz `assets/composition/README.md`).

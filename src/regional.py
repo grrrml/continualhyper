@@ -37,6 +37,19 @@ def _region_vec(spec, n: int, device) -> Optional[torch.Tensor]:
     return m.reshape(-1)
 
 
+def box_to_cxcywh(box):
+    """(x0,y0,x1,y1) od LEWEGO GORNEGO rogu -> (cx,cy,w,h), czyli konwencja `manager.cond_box`.
+
+    Dwie konwencje ramki sa w tym repo stalym zrodlem pomylek (patrz komentarze w
+    `_ground_iou.py`), wiec przeliczenie zyje TYLKO tutaj. Gesta maska nie ma ramki, wiec
+    zwraca None -- grounding dostaje wtedy pelna klatke albo, przy `ground_boxonly`,
+    wylacza sie calkiem."""
+    if box is None or torch.is_tensor(box):
+        return None
+    x0, y0, x1, y1 = box
+    return ((x0 + x1) / 2.0, (y0 + y1) / 2.0, x1 - x0, y1 - y0)
+
+
 def reset_attn_acc() -> None:
     ATTN_ACC.clear()
 
@@ -321,9 +334,16 @@ class RegionKVAttnProcessor:
     manager: hypernet manager -- adapters are swapped per K/V compute.
     """
 
-    def __init__(self, regions, manager):
+    def __init__(self, regions, manager, attn2_name: str = "", ground: bool = False):
+        """`ground=True`: kazdy region dostaje dodatkowo NASZ wstrzyk GSA zaadresowany wlasna
+        ramka. To jest roznica wobec sierpniowego werdyktu ("regionalna uwaga trasuje tresc,
+        ale nie wymusza liczby podmiotow"): gole maskowanie uwagi tylko przekierowuje, a GSA
+        jest UCZONY pchac mase konceptu do ramki. Galaz groundingu powstala po zamknieciu
+        tamtego watku (GO 2026-08-20 wobec kompozycji zaparkowanej 2026-08-09)."""
         self.regions = regions
         self.manager = manager
+        self.name = attn2_name
+        self.ground = ground
 
     def __call__(self, attn, hidden_states, encoder_hidden_states=None,
                  attention_mask=None, temb=None, **kw):
@@ -344,12 +364,17 @@ class RegionKVAttnProcessor:
         with m.no_lora():                          # ONE global query, as in the reference
             q_g = attn.head_to_batch_dim(attn.to_q(hidden_states))
 
-        def _attend(ctx, task_idx=None, token_mask=None):
+        def _attend(ctx, region=None):
             # region identity enters through K/V only; q stays global (reference behaviour)
-            if is_cross and task_idx is not None:
-                m.set_context(m.canon_pooled[task_idx:task_idx + 1], task_idx=task_idx,
-                              token_mask=token_mask)
-                m.compute_and_cache_loras()
+            if is_cross and region is not None:
+                snap = region.get("lora")
+                if snap is not None:          # policzone raz przed samplingiem, patrz
+                    m.restore_lora(snap)      # manager.snapshot_lora
+                else:
+                    ti = region["task_idx"]
+                    m.set_context(m.canon_pooled[ti:ti + 1], task_idx=ti,
+                                  token_mask=region.get("token_mask"))
+                    m.compute_and_cache_loras()
                 k_ = attn.to_k(ctx); v_ = attn.to_v(ctx)
             else:
                 with m.no_lora():
@@ -362,7 +387,11 @@ class RegionKVAttnProcessor:
 
         out = _attend(ctx_g)                       # global: no adapter
 
-        if is_cross and self.regions:
+        # Przebieg bezwarunkowy ma zobaczyc CZYSTY prompt negatywny w calym kadrze: bez
+        # regionow, bez adapterow. Bez tej bramki wolajacy musial odinstalowywac procesor
+        # wokol kazdego wywolania uncond (tak robi `_compose_unp1.py --kv 1`) -- latwo
+        # zapomniec, a skutek jest cichy. `lora_enabled` rozroznia je jednoznacznie.
+        if is_cross and self.regions and bool(getattr(m, "lora_enabled", True)):
             side = int(round(n_img ** 0.5))
             if side * side == n_img:
                 for r in self.regions:
@@ -373,7 +402,13 @@ class RegionKVAttnProcessor:
                                            dtype=hidden_states.dtype)
                     if ctx_r.shape[0] == 1 and B > 1:
                         ctx_r = ctx_r.expand(B, -1, -1)
-                    o_r = _attend(ctx_r, r["task_idx"], r.get("token_mask"))
+                    if self.ground:
+                        m.set_ground(r["task_idx"], box_to_cxcywh(r["box"]))
+                    o_r = _attend(ctx_r, r)
+                    if self.ground and getattr(m, "ground_gsa", False):
+                        inj = self._gsa(attn, hidden_states, side, o_r)
+                        if inj is not None:
+                            o_r = o_r + inj
                     pm = vec.to(dtype=out.dtype)[None, :, None]
                     out = out * (1 - pm) + o_r * pm       # paste region output inside its box
         out = attn.batch_to_head_dim(out)
@@ -386,14 +421,40 @@ class RegionKVAttnProcessor:
         return out / attn.rescale_output_factor
 
 
-def set_region_kv(unet, regions, manager) -> int:
-    """Install K/V-replacement processors on attn2; `regions=None` restores defaults."""
+    def _gsa(self, attn, hidden_states, side: int, like: torch.Tensor):
+        """kappa * tanh(gate) * inside(ramka) * read -- ten sam wzor co w GroundedAttnProcessor,
+        tyle ze wolany raz na REGION, nie raz na obraz. Ramki scen CIDM sa rozlaczne (sprawdzone
+        dla wszystkich 11), wiec wklady regionow nie interferuja. Zwraca None, gdy checkpoint
+        nie ma GSA albo warstwa nie ma bramki."""
+        m = self.manager
+        g = m.get_ground(self.name)
+        if g is None:
+            return None
+        read = m.gsa_read(self.name, hidden_states)
+        if read is None:
+            return None
+        _, gate, _ = g
+        inside = m.geo_inside(side, side, like.device, like.dtype)       # [n,1] przy jednej ramce
+        ins = inside.unsqueeze(0) if inside.ndim == 2             else inside.repeat_interleave(attn.heads, dim=0)
+        gain = float(getattr(m, "ground_gain", 1.0))
+        gres = getattr(m, "ground_gain_res", None)
+        if gres:                       # kappa per rozdzielczosc mapy, jak w GroundedAttnProcessor
+            gain *= float(gres.get(side, 1.0))
+        if getattr(m, "ground_scale_with_lora", False):
+            gain *= float(getattr(m, "lora_scale", 1.0))
+        return gain * torch.tanh(gate).to(like.dtype) * ins * attn.head_to_batch_dim(read)
+
+
+def set_region_kv(unet, regions, manager, ground: bool = False) -> int:
+    """Install K/V-replacement processors on attn2; `regions=None` restores defaults.
+
+    `ground=True` wymaga checkpointu z `ground_gsa`; bez niego wstrzyk jest cicho pomijany."""
     from diffusers.models.attention_processor import AttnProcessor
     n = 0
     for name, mod in unet.named_modules():
         if name.endswith("attn2") and hasattr(mod, "set_processor"):
             mod.set_processor(AttnProcessor() if not regions
-                              else RegionKVAttnProcessor(regions, manager))
+                              else RegionKVAttnProcessor(regions, manager, name, ground))
             n += 1
     return n
 

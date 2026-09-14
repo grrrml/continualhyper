@@ -7,13 +7,15 @@ takze w predykcji bezwarunkowej, a CFG mnozy jej blad przez (1 - guidance).
 
 Uruchomienie: python scripts/_verify_regional.py
 """
+import contextlib
 import sys
 
 import torch
 import torch.nn as nn
 
 sys.path.insert(0, ".")
-from src.regional import RegionalAttnProcessor, reset_attn_acc, ATTN_ACC
+from src.regional import (RegionalAttnProcessor, RegionKVAttnProcessor,
+                          box_to_cxcywh, reset_attn_acc, ATTN_ACC)
 
 
 class StubAttn(nn.Module):
@@ -46,6 +48,19 @@ class StubAttn(nn.Module):
 class StubManager:
     def __init__(self, lora_enabled=True):
         self.lora_enabled = lora_enabled
+        self.ground_gsa = False
+
+    @contextlib.contextmanager
+    def no_lora(self):
+        prev = self.lora_enabled
+        self.lora_enabled = False
+        try:
+            yield
+        finally:
+            self.lora_enabled = prev
+
+    def restore_lora(self, snap):
+        pass
 
 
 def run(regions, manager, **kw):
@@ -96,6 +111,38 @@ def main():
     print(f"5) confine zalezy od ramki:        max|d| = {d_geo:.6f}  (ma byc > 0)")
     ok = ok and d_geo > 1e-6
 
+    # 6-7) RegionKVAttnProcessor: ten sam kontrakt cond/uncond, ale w torze JEDNOPRZEBIEGOWYM.
+    #      Bez bramki wolajacy musial odinstalowywac procesor wokol przebiegu uncond recznie.
+    def run_kv(regions, manager):
+        torch.manual_seed(0)
+        attn = StubAttn()
+        proc = RegionKVAttnProcessor(regions, manager, "mid.attn2", False)
+        torch.manual_seed(1)
+        hs = torch.randn(1, 256, 8)
+        ehs = torch.randn(1, 8, 8)
+        with torch.no_grad():
+            return proc(attn, hs, encoder_hidden_states=ehs)
+
+    torch.manual_seed(7)
+    kv_regions = [{"task_idx": 0, "hidden": torch.randn(1, 8, 8), "box": L,
+                   "lora": ("snap", None)}]
+
+    kv_plain = run_kv([], StubManager())
+    kv_cond = run_kv(kv_regions, StubManager(lora_enabled=True))
+    kv_unc = run_kv(kv_regions, StubManager(lora_enabled=False))
+    d_kc = float((kv_cond - kv_plain).abs().max())
+    d_ku = float((kv_unc - kv_plain).abs().max())
+    print(f"6) region_kv, przebieg warunkowy:  max|d| = {d_kc:.6f}  (ma byc > 0)")
+    print(f"7) region_kv, przebieg uncond:     max|d| = {d_ku:.6f}  (ma byc == 0)")
+    ok = ok and d_kc > 1e-6 and d_ku == 0.0
+
+    # 8) konwersja ramki zyje w jednym miejscu i liczy to, co trzeba
+    got = box_to_cxcywh((0.2, 0.4, 0.6, 1.0))
+    exp = (0.4, 0.7, 0.4, 0.6)
+    same = all(abs(a - b) < 1e-9 for a, b in zip(got, exp))
+    print(f"8) box_to_cxcywh: {tuple(round(x, 4) for x in got)} (ma byc {exp}); "
+          f"gesta maska -> {box_to_cxcywh(torch.zeros(4, 4))}")
+    ok = ok and same and box_to_cxcywh(torch.zeros(4, 4)) is None
     print("\n" + ("OK" if ok else "BLAD"))
     return 0 if ok else 1
 

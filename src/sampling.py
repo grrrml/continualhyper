@@ -11,6 +11,8 @@ from typing import Optional
 
 import torch
 
+from .regional import box_to_cxcywh
+
 
 @torch.no_grad()
 def ddim_sample(
@@ -172,16 +174,6 @@ def ddim_sample(
     return bundle.decode_latents(latents)
 
 
-def _cxcywh(box):
-    """(x0,y0,x1,y1) od lewego gornego rogu -> (cx,cy,w,h), czyli konwencja `manager.cond_box`.
-    Gesta maska nie ma ramki, wiec zwraca None (grounding dostaje wtedy pelna klatke albo,
-    przy `ground_boxonly`, wylacza sie calkiem)."""
-    if box is None or torch.is_tensor(box):
-        return None
-    x0, y0, x1, y1 = box
-    return ((x0 + x1) / 2.0, (y0 + y1) / 2.0, x1 - x0, y1 - y0)
-
-
 @torch.no_grad()
 def compose_sample_regions(
     bundle, manager, regions, global_hidden, uncond_hidden, global_pooled,
@@ -285,7 +277,7 @@ def compose_sample_regions(
             merged = alpha * eps_global
             for r, m, ac in zip(regions, masks, ac_r):
                 if ground:
-                    manager.set_ground(r["task_idx"], _cxcywh(r["box"]))
+                    manager.set_ground(r["task_idx"], box_to_cxcywh(r["box"]))
                 manager.set_context(r["pooled"].to(device), task_idx=r["task_idx"],
                                     token_mask=r["token_mask"])
                 manager.compute_and_cache_loras()
@@ -317,3 +309,102 @@ def compose_sample_regions(
     else:
         manager.ground_gain = _prev_gain
     return bundle.decode_latents(latents)        # dzieli na kawalki: VAE fp32 przy 1024 to ~1 GB/obraz
+
+
+@torch.no_grad()
+def compose_sample_single(
+    bundle, manager, regions, global_hidden, uncond_hidden, global_pooled,
+    num_inference_steps: int = 50, guidance_scale: float = 7.5,
+    height: Optional[int] = None, width: Optional[int] = None, generator=None, scheduler=None,
+    uncond_pooled: Optional[torch.Tensor] = None, ground: bool = False,
+):
+    """JEDNO przejscie UNetu na krok. Koszt NIEZALEZNY od liczby komponowanych konceptow --
+    to jest ta wlasciwosc, ktora niesie teze pracy; `compose_sample_regions` (ich rown. 4-5)
+    potrzebuje 2+U przebiegow i jest tu punktem odniesienia, nie wersja docelowa.
+
+    Protokol wejscia jest DOKLADNIE ich: ITP jako prompt globalny, kazdy RTP zakodowany
+    OSOBNO plus ramka. Osobne kodowanie nie jest wygoda, tylko koniecznoscia -- CLIP jest
+    przyczynowy, wiec w jednym scalonym prompcie drugi span niesie kontekst pierwszego
+    (zmierzone w tym repo, audyt 2885915: drugi span rownoodlegly od obu wzorcow).
+    Sekwencje tekstowe nie maja w UNecie ograniczenia dlugosci ani pozycji, wiec U+1 blokow
+    kontekstu miesci sie w jednym przebiegu: rozne sa tylko K/V w 16 (SD-1.5) lub 70 (SDXL)
+    warstwach attn2, a nie caly UNet.
+
+    `ground=True`: kazdy region dostaje dodatkowo wstrzyk GSA zaadresowany wlasna ramka.
+    Sierpniowy werdykt ("regionalna uwaga trasuje tresc, ale nie wymusza liczby podmiotow")
+    dotyczyl GOLEGO maskowania uwagi; galaz groundingu powstala pozniej i jest UCZONA pchac
+    mase konceptu do ramki, wiec ten wariant nie byl nigdy sprawdzony.
+
+    OGRANICZENIE, ktore trzeba znac przy czytaniu wynikow: `RegionKVAttnProcessor` liczy `q`
+    globalnie i `to_out` bez adaptera (zachowanie referencyjne Mix-of-Show), wiec w tym torze
+    dziala WYLACZNIE tekstowa polowa naszej LoRA (`to_k`/`to_v`). Nasze checkpointy maja
+    delty takze na `to_q`/`to_out.0`. Jesli podmioty znow beda sie zlewac, to jest pierwsza
+    dzwignia do sprawdzenia, a nie dowod, ze jedno przejscie nie dziala.
+
+    regions: [{'task_idx', 'hidden', 'token_mask', 'box'}] -- 'pooled' nie jest uzywane,
+    bo hipersiec warunkuje sie tu kanonicznym kluczem konceptu, nie promptem regionu.
+    """
+    from .regional import set_region_kv
+    device, dtype = bundle.device, bundle.dtype
+    height = height or bundle.default_resolution
+    width = width or bundle.default_resolution
+    scheduler = scheduler if scheduler is not None else bundle.ddim_scheduler
+    scheduler.set_timesteps(num_inference_steps, device=device)
+    lh, lw = height // 8, width // 8
+    latents = torch.randn(1, bundle.latent_channels, lh, lw, generator=generator,
+                          device=device, dtype=dtype) * scheduler.init_noise_sigma
+
+    ac_g = bundle.added_cond(1, height, width, pooled=global_pooled)         if hasattr(bundle, "added_cond") else {}
+    if ac_g:
+        ac_u = bundle.added_cond(1, height, width, pooled=uncond_pooled)             if uncond_pooled is not None             else {**ac_g, "text_embeds": torch.zeros_like(ac_g["text_embeds"])}
+    else:
+        ac_u = {}
+
+    # LoRA jest niezalezna od kroku, wiec liczymy ja RAZ na region; procesor potem tylko
+    # podmienia wskaznik cache'a. Bez tego hipersiec liczylaby sie w kazdej warstwie attn2,
+    # dla kazdego regionu i kazdego kroku.
+    for r in regions:
+        ti = r["task_idx"]
+        manager.set_context(manager.canon_pooled[ti:ti + 1], task_idx=ti,
+                            token_mask=r.get("token_mask"))
+        manager.compute_and_cache_loras()
+        r["lora"] = manager.snapshot_lora()
+
+    gh = global_hidden.to(device=device, dtype=dtype)
+    uh = uncond_hidden.to(device=device, dtype=dtype)
+
+    _MISSING = object()
+    _prev_gain = getattr(manager, "ground_gain", _MISSING)
+    if not ground:
+        manager.set_ground(None)          # czysci ramke z poprzedniego wywolania
+    set_region_kv(bundle.unet, regions, manager, ground)
+    try:
+        steps = list(scheduler.timesteps)
+        for i, t in enumerate(steps):
+            if ground:                    # harmonogram kappa, jak w ddim_sample
+                frac = i / max(1, len(steps))
+                manager.ground_gain = (float(getattr(manager, "ground_gain_base", 1.0))
+                                       if frac < float(getattr(manager, "ground_sched_frac", 1.0))
+                                       else 0.0)
+            inp = scheduler.scale_model_input(latents, t)
+            eps_c = bundle.unet(inp, t, encoder_hidden_states=gh,
+                                added_cond_kwargs=ac_g or None).sample
+            with manager.no_lora():
+                # procesor sam przepuszcza ten przebieg: czysty negatyw w calym kadrze,
+                # bez regionow i bez adapterow (bramka `lora_enabled` w RegionKVAttnProcessor)
+                eps_u = bundle.unet(inp, t, encoder_hidden_states=uh,
+                                    added_cond_kwargs=ac_u or None).sample
+            eps = eps_u + guidance_scale * (eps_c - eps_u)
+            latents = scheduler.step(eps, t, latents).prev_sample
+    finally:
+        set_region_kv(bundle.unet, None, manager)
+        for r in regions:
+            r.pop("lora", None)
+        if ground:
+            manager.set_ground(None)
+        if _prev_gain is _MISSING:
+            if hasattr(manager, "ground_gain"):
+                del manager.ground_gain
+        else:
+            manager.ground_gain = _prev_gain
+    return bundle.decode_latents(latents)

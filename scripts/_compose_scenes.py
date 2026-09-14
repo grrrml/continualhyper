@@ -44,6 +44,9 @@ def parse_args():
     ap.add_argument("--config", default="configs/phaseX/X_sdxl_ground_800aug.yaml")
     ap.add_argument("--ckpt", default="outputs/sdxl/X_sdxl_ground_800aug/hyper.pt")
     ap.add_argument("--out", default="outputs/compose_scenes")
+    ap.add_argument("--mode", default="unp1", choices=["unp1", "single"],
+                    help="unp1 = ich rown. 4-5, 2+U przebiegow UNeta na krok (punkt odniesienia); "
+                         "single = jedno przejscie, koszt niezalezny od U (nasza teza)")
     ap.add_argument("--only", default="", help="lista id scen po przecinku, np. 12.1,12.4")
     ap.add_argument("--scene35", default="", choices=["", "v7", "v9", "literal"],
                     help="nadpisuje odczyt spornego trzeciego regionu sceny 3.5. Domyslnie v7, "
@@ -193,9 +196,15 @@ def main():
         if a.ground:
             if not getattr(manager, "ground_cond", False):
                 raise SystemExit("--ground 1 wymaga checkpointu z ground_cond: true")
-            from src.regional import set_grounded
-            print(f"[compose] grounding na {set_grounded(bundle.unet, manager)} warstwach",
-                  flush=True)
+            if a.mode == "single" and not getattr(manager, "ground_gsa", False):
+                raise SystemExit("--mode single --ground 1 wymaga ground_gsa: true "
+                                 "(stara skalarna bramka nie jest adresowana per region)")
+            if a.mode == "unp1":
+                # W trybie single procesor regionalny sam wola wstrzyk GSA i sam siedzi na
+                # attn2 -- instalowanie tu GroundedAttnProcessor tylko by go nadpisalo.
+                from src.regional import set_grounded
+                print(f"[compose] grounding na {set_grounded(bundle.unet, manager)} warstwach",
+                      flush=True)
 
     # w dry_run nie ma bundle'a, wiec rozdzielczosc bierzemy z configu -- inaczej manifest
     # dla SD-1.5 klamalby, ze 1024
@@ -216,7 +225,9 @@ def main():
             "scene": s["id"], "figure": s["figure"], "itp": s["itp"], "rtp": s["rtp"],
             "regions": [{k: r[k] for k in ("v", "task_idx", "class_word", "phrase",
                                            "prompt", "box", "rtp_segment")} for r in regions],
-            "ours": {"config": a.config, "ckpt": a.ckpt, "commit": commit,
+            "ours": {"mode": a.mode,
+                     "unet_calls_per_step": 2 if a.mode == "single" else 2 + len(regions),
+                     "config": a.config, "ckpt": a.ckpt, "commit": commit,
                      "backbone": str(cfg.get("sd_model_id", "")), "resolution": res,
                      "steps": a.steps, "guidance_scale": a.cfg, "alpha": a.alpha,
                      "lora_scale": a.scale, "bootstrap_steps": a.bootstrap,
@@ -238,7 +249,7 @@ def main():
 
         import torch
         from torchvision.utils import save_image
-        from src.sampling import compose_sample_regions
+        from src.sampling import compose_sample_regions, compose_sample_single
         from src.tokens import token_span_mask
         gh, gp, _ = bundle.encode_text([s["itp"]])
         uh, up, _ = bundle.encode_text([NEG])
@@ -252,11 +263,17 @@ def main():
                          "token_mask": tm if cfg.get("token_mask_lora") else None})
         for i in range(a.n):
             g = torch.Generator(device="cuda").manual_seed(a.seed0 + i)
-            img = compose_sample_regions(bundle, manager, regs, gh, uh, gp,
-                                         num_inference_steps=a.steps, guidance_scale=a.cfg,
-                                         alpha=a.alpha, height=res, width=res, generator=g,
-                                         regional_steps=rs, bootstrap_steps=a.bootstrap,
-                                         uncond_pooled=up, ground=bool(a.ground))
+            if a.mode == "single":
+                img = compose_sample_single(bundle, manager, regs, gh, uh, gp,
+                                            num_inference_steps=a.steps, guidance_scale=a.cfg,
+                                            height=res, width=res, generator=g,
+                                            uncond_pooled=up, ground=bool(a.ground))
+            else:
+                img = compose_sample_regions(bundle, manager, regs, gh, uh, gp,
+                                             num_inference_steps=a.steps, guidance_scale=a.cfg,
+                                             alpha=a.alpha, height=res, width=res, generator=g,
+                                             regional_steps=rs, bootstrap_steps=a.bootstrap,
+                                             uncond_pooled=up, ground=bool(a.ground))
             save_image(img[0], os.path.join(d, f"{i}.png"))
         print(f"    {a.n} obrazow -> {d}", flush=True)
     print("\nDONE", flush=True)

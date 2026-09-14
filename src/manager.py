@@ -603,6 +603,22 @@ class ContinualHyperManager(nn.Module):
                     return float(sc)
         return self.lora_scale
 
+    def snapshot_lora(self):
+        """Zamrozony wynik `compute_and_cache_loras` (cache warstw + maska tokenowa).
+
+        Po co: LoRA jest NIEZALEZNA OD KROKU CZASOWEGO, wiec przy kompozycji w jednym
+        przejsciu wystarczy policzyc ja raz na koncept, a potem tylko podmieniac wskaznik.
+        Bez tego `RegionKVAttnProcessor` przeliczal cala hipersiec w KAZDEJ warstwie attn2,
+        dla kazdego regionu i kazdego kroku -- na SDXL to 70 x U x 50 pelnych forwardow
+        hipersieci 87.5 M na jeden obraz.
+
+        UWAGA: `lora_scale` jest wpieczona w cache przez `_scale_for`, wiec migawka staje sie
+        nieaktualna, jesli zmienic skale po jej zrobieniu. Skale ustawiac PRZED samplingiem."""
+        return (self._cache, self._token_mask)
+
+    def restore_lora(self, snap) -> None:
+        self._cache, self._token_mask = snap
+
     def get_cached_lora(self, layer_name: str) -> Optional[LoraPair]:
         return self._cache.get(layer_name)
 
