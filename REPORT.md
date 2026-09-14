@@ -916,6 +916,24 @@ celu 0.747), dlatego nowym ziarnom dosylamy skale s=0.3.
 Implementacja: `reg.space`, domyslnie `factors`; `_reg_dw` liczy odleglosc bez materializowania
 `dW` (tozsamosc sladu, koszt O(r^2(in+out)), zgodnosc z rachunkiem wprost 0.0e+00).
 
+**Jesli to bedzie headline — co opisujemy w pracy** (ustalone 2026-09-14):
+* **Teza, nie implementacja.** Regularyzacja wyjscia von Oswalda zastosowana do LoRA karze
+  wolnosc cechowania: `(x_L R, R^-1 x_R)` to ta sama funkcja, a MSE na czynnikach traktuje je
+  jak rozne. Kotwica powinna wiec dzialac na `dW`. Do tego obserwacja empiryczna: wymaga to
+  bety o **dwa rzedy** wiekszej niz na czynnikach i ma **niemonotoniczne optimum** (2500 lepsze
+  od 500 i od 10000) — sama zmiana przestrzeni bez rekalibracji wyglada jak porazka, i tak nam
+  sie to najpierw pokazalo.
+* **Atrybucja.** Argument o niejednoznacznosci rozkladu nalezy sie LoRAGen (ICLR 2026) i musi byc
+  zacytowany. Nasze jest przeniesienie go na kotwice w uczeniu ciaglym oraz kalibracja bety.
+* **Tozsamosc sladu: jedno zdanie w opisie metody albo przypis, NIE osobny wklad.** To
+  standardowa algebra (cyklicznosc sladu + `||M||_F^2 = tr(M^T M)`), wiec podawanie jej jako
+  nowosci wygladaloby naiwnie. Potrzebna jest wylacznie po to, zeby uprzedzic pytanie
+  o koszt: `||A1 B1 - A2 B2||_F^2 = tr(G1 H1) - 2 tr(Gx Hx) + tr(G2 H2)` przy `G = A^T A`
+  i `H = B B^T` rozmiaru `[r, r]`, czyli `O(r^2(in+out))` zamiast materializowania `[in, out]`.
+  Dla typowej warstwy (in=768, out=1280, r=4) to 32.8 tys. mnozen zamiast 3.9 mln i 32 liczby
+  w pamieci zamiast 983 tys. Bez tego regularyzacja przy 50 kotwicach i 64 warstwach po prostu
+  by sie nie zmiescila — i to jest jedyny powod, dla ktorego o niej wspominamy.
+
 ### 5b.4 Pomiary architektury (bez GPU-godzin, `scripts/_spectrum.py`)
 
 **Rząd efektywny emitowanych adapterów** (99% energii, mediana po 64 warstwach, macierz centrowana
