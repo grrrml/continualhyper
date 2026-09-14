@@ -75,7 +75,11 @@ def git_commit():
     try:
         out = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True,
                              text=True, timeout=10)
-        dirty = subprocess.run(["git", "status", "--porcelain"], capture_output=True,
+        # `-uno`: nie liczymy plikow NIESLEDZONYCH. Na klastrze `run.sh` tworzy symlinki
+        # data/logs/wandb, a te wzorce maja w .gitignore ukosnik na koncu, ktory lapie tylko
+        # katalogi -- symlinku nie. Bez `-uno` KAZDY przebieg na klastrze bylby "dirty",
+        # czyli tag przestawalby cokolwiek znaczyc.
+        dirty = subprocess.run(["git", "status", "--porcelain", "-uno"], capture_output=True,
                                text=True, timeout=10)
         return out.stdout.strip() + ("-dirty" if dirty.stdout.strip() else "")
     except Exception:
