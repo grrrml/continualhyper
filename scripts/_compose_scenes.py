@@ -70,6 +70,10 @@ def parse_args():
                          "'sila:przeciek:max_bok' po przecinku, np. '2:0:16,1:0:32,0.5:0:0'. "
                          "Sila w jednostkach logitu (0 = bez separacji), max_bok ogranicza "
                          "kare do map ukladu (0 = wszystkie). Punkt do wlasnego podkatalogu")
+    ap.add_argument("--solo", type=int, default=0,
+                    help="1 = zamiast kompozycji renderuj KONTROLE JEDNOKONCEPTOWE: kazdy "
+                         "region osobno, ta sama ramka, prompt, skala i ziarno. Roznica wobec "
+                         "kompozycji jest wtedy efektem samej kompozycji, a nie konceptu")
     ap.add_argument("--scale_grid", default="",
                     help="wartosci --scale po przecinku, np. '0.4,0.55,0.7'. Sila adaptera "
                          "rzadzi tozsamoscia; w tym torze ITP renderuje galaz globalna BEZ "
@@ -318,6 +322,22 @@ def main():
             json.dump(manifest, open(os.path.join(d, "manifest.json"), "w", encoding="utf-8"),
                       indent=2, ensure_ascii=False)
             if a.dry_run:
+                continue
+            if a.solo:
+                for r_, reg_ in zip(regions, regs):
+                    dd = os.path.join(d, f"solo_{r_['v']}")
+                    os.makedirs(dd, exist_ok=True)
+                    for i in range(a.n):
+                        g = torch.Generator(device="cuda").manual_seed(a.seed0 + i)
+                        img = compose_sample_single(
+                            bundle, manager, [reg_], gh, uh, gp,
+                            num_inference_steps=a.steps, guidance_scale=a.cfg,
+                            height=res, width=res, generator=g, uncond_pooled=up,
+                            ground=bool(a.ground), self_strength=st, self_leak=lk,
+                            self_sched=a.self_sched, self_res=sres,
+                            self_bg_shared=bool(a.self_bg))
+                        save_image(img[0], os.path.join(dd, f"{i}.png"))
+                    print(f"    [{tag(pt, boot, sc)}] solo {r_['v']} -> {dd}", flush=True)
                 continue
             for i in range(a.n):
                 g = torch.Generator(device="cuda").manual_seed(a.seed0 + i)
