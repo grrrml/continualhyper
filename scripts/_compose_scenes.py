@@ -65,6 +65,12 @@ def parse_args():
     ap.add_argument("--regional_steps", type=int, default=-1, help="-1 = wszystkie kroki")
     ap.add_argument("--ground", type=int, default=0,
                     help="1 = dolacz nasz grounding GSA zaadresowany ramka regionu")
+    ap.add_argument("--self_grid", default="",
+                    help="tryb single: punkty MIEKKIEJ separacji attn1 jako 'sila:przeciek' "
+                         "po przecinku, np. '0:0,4:0,8:0,4:0.5'. Sila w jednostkach logitu, "
+                         "0 = bez separacji. Kazdy punkt do wlasnego podkatalogu")
+    ap.add_argument("--self_sched", type=float, default=0.5,
+                    help="frakcja krokow, przez ktore zyje separacja attn1")
     ap.add_argument("--res", type=int, default=0, help="0 = natywna dla backbone'u")
     ap.add_argument("--dry_run", type=int, default=0,
                     help="1 = bez GPU i bez wag: prompty, manifesty i podglady ukladu")
@@ -216,70 +222,93 @@ def main():
                     else int(cfg.get("resolution", 1024)))
     rs = None if a.regional_steps < 0 else a.regional_steps
 
+    if a.self_grid:
+        points = [(float(x.partition(":")[0]), float(x.partition(":")[2] or 0.0))
+                  for x in a.self_grid.split(",") if x.strip()]
+    else:
+        points = [(0.0, 0.0)]
+    graded = bool(a.self_grid)
+
+    def tag(st, lk):
+        return "base" if st <= 0 else f"s{st:g}_l{lk:g}"
+
     for s, regions in plan:
-        d = os.path.join(a.out, s["id"])
-        os.makedirs(d, exist_ok=True)
-        draw_layout(s, regions, os.path.join(d, "layout.png"))
         print(f"\n[{s['id']}] ITP '{s['itp']}'", flush=True)
         for r in regions:
             print(f"    {r['v']:>3s} task {r['task_idx']} box {r['box']} <- '{r['prompt']}'",
                   flush=True)
 
-        manifest = {
-            "scene": s["id"], "figure": s["figure"], "itp": s["itp"], "rtp": s["rtp"],
-            "regions": [{k: r[k] for k in ("v", "task_idx", "class_word", "phrase",
-                                           "prompt", "box", "rtp_segment")} for r in regions],
-            "ours": {"mode": a.mode,
-                     "unet_calls_per_step": 2 if a.mode == "single" else 2 + len(regions),
-                     "config": a.config, "ckpt": a.ckpt, "commit": commit,
-                     "backbone": str(cfg.get("sd_model_id", "")), "resolution": res,
-                     "steps": a.steps, "guidance_scale": a.cfg, "alpha": a.alpha,
-                     "lora_scale": a.scale, "bootstrap_steps": a.bootstrap,
-                     "regional_steps": rs, "ground": bool(a.ground),
-                     "scheduler": "DDIM", "negative_prompt": NEG,
-                     "seeds": [a.seed0 + i for i in range(a.n)],
-                     "scene35_reading": a.scene35 or None},
-            "theirs": {"paper": spec["paper"],
-                       "not_stated_by_authors": ["resolution", "sampler", "step count", "seed",
-                                                 "negative prompt"],
-                       "note": "ITP/RTP i geometria ramek sa ich; rozdzielczosc, sampler, liczba "
-                               "krokow i ziarno sa nasze -- praca ich nie podaje (tekst mowi "
-                               "seed 0, wydany kod ma na sztywno 2024)"},
-        }
-        json.dump(manifest, open(os.path.join(d, "manifest.json"), "w", encoding="utf-8"),
-                  indent=2, ensure_ascii=False)
-        if a.dry_run:
-            continue
+        regs = gh = uh = gp = up = None
+        if not a.dry_run:
+            import torch
+            from torchvision.utils import save_image
+            from src.sampling import compose_sample_regions, compose_sample_single
+            from src.tokens import token_span_mask
+            gh, gp, _ = bundle.encode_text([s["itp"]])
+            uh, up, _ = bundle.encode_text([NEG])
+            regs = []
+            for r in regions:
+                h, pl, _ = bundle.encode_text([r["prompt"]])
+                tm = token_span_mask(bundle.tokenizer, [r["prompt"]], r["phrase"]).cuda()
+                if int(tm.sum()) == 0:
+                    raise SystemExit(f"scena {s['id']}: pusty span '{r['phrase']}' "
+                                     f"w '{r['prompt']}'")
+                regs.append({"task_idx": r["task_idx"], "hidden": h, "pooled": pl,
+                             "box": r["box"],
+                             "token_mask": tm if cfg.get("token_mask_lora") else None})
 
-        import torch
-        from torchvision.utils import save_image
-        from src.sampling import compose_sample_regions, compose_sample_single
-        from src.tokens import token_span_mask
-        gh, gp, _ = bundle.encode_text([s["itp"]])
-        uh, up, _ = bundle.encode_text([NEG])
-        regs = []
-        for r in regions:
-            h, pl, _ = bundle.encode_text([r["prompt"]])
-            tm = token_span_mask(bundle.tokenizer, [r["prompt"]], r["phrase"]).cuda()
-            if int(tm.sum()) == 0:
-                raise SystemExit(f"scena {s['id']}: pusty span '{r['phrase']}' w '{r['prompt']}'")
-            regs.append({"task_idx": r["task_idx"], "hidden": h, "pooled": pl, "box": r["box"],
-                         "token_mask": tm if cfg.get("token_mask_lora") else None})
-        for i in range(a.n):
-            g = torch.Generator(device="cuda").manual_seed(a.seed0 + i)
-            if a.mode == "single":
-                img = compose_sample_single(bundle, manager, regs, gh, uh, gp,
-                                            num_inference_steps=a.steps, guidance_scale=a.cfg,
-                                            height=res, width=res, generator=g,
-                                            uncond_pooled=up, ground=bool(a.ground))
-            else:
-                img = compose_sample_regions(bundle, manager, regs, gh, uh, gp,
-                                             num_inference_steps=a.steps, guidance_scale=a.cfg,
-                                             alpha=a.alpha, height=res, width=res, generator=g,
-                                             regional_steps=rs, bootstrap_steps=a.bootstrap,
-                                             uncond_pooled=up, ground=bool(a.ground))
-            save_image(img[0], os.path.join(d, f"{i}.png"))
-        print(f"    {a.n} obrazow -> {d}", flush=True)
+        for st, lk in points:
+            d = os.path.join(a.out, tag(st, lk), s["id"]) if graded \
+                else os.path.join(a.out, s["id"])
+            os.makedirs(d, exist_ok=True)
+            draw_layout(s, regions, os.path.join(d, "layout.png"))
+            manifest = {
+                "scene": s["id"], "figure": s["figure"], "itp": s["itp"], "rtp": s["rtp"],
+                "regions": [{k: r[k] for k in ("v", "task_idx", "class_word", "phrase",
+                                               "prompt", "box", "rtp_segment")}
+                            for r in regions],
+                "ours": {"mode": a.mode,
+                         "unet_calls_per_step": 2 if a.mode == "single" else 2 + len(regions),
+                         "config": a.config, "ckpt": a.ckpt, "commit": commit,
+                         "backbone": str(cfg.get("sd_model_id", "")), "resolution": res,
+                         "steps": a.steps, "guidance_scale": a.cfg, "alpha": a.alpha,
+                         "lora_scale": a.scale, "bootstrap_steps": a.bootstrap,
+                         "regional_steps": rs, "ground": bool(a.ground),
+                         "self_strength": st, "self_leak": lk,
+                         "self_sched": a.self_sched if st > 0 else None,
+                         "scheduler": "DDIM", "negative_prompt": NEG,
+                         "seeds": [a.seed0 + i for i in range(a.n)],
+                         "scene35_reading": a.scene35 or None},
+                "theirs": {"paper": spec["paper"],
+                           "not_stated_by_authors": ["resolution", "sampler", "step count",
+                                                     "seed", "negative prompt"],
+                           "note": "ITP/RTP i geometria ramek sa ich; rozdzielczosc, sampler, "
+                                   "liczba krokow i ziarno sa nasze -- praca ich nie podaje "
+                                   "(tekst mowi seed 0, wydany kod ma na sztywno 2024)"},
+            }
+            json.dump(manifest, open(os.path.join(d, "manifest.json"), "w", encoding="utf-8"),
+                      indent=2, ensure_ascii=False)
+            if a.dry_run:
+                continue
+            for i in range(a.n):
+                g = torch.Generator(device="cuda").manual_seed(a.seed0 + i)
+                if a.mode == "single":
+                    img = compose_sample_single(bundle, manager, regs, gh, uh, gp,
+                                                num_inference_steps=a.steps,
+                                                guidance_scale=a.cfg, height=res, width=res,
+                                                generator=g, uncond_pooled=up,
+                                                ground=bool(a.ground), self_strength=st,
+                                                self_leak=lk, self_sched=a.self_sched)
+                else:
+                    img = compose_sample_regions(bundle, manager, regs, gh, uh, gp,
+                                                 num_inference_steps=a.steps,
+                                                 guidance_scale=a.cfg, alpha=a.alpha,
+                                                 height=res, width=res, generator=g,
+                                                 regional_steps=rs,
+                                                 bootstrap_steps=a.bootstrap,
+                                                 uncond_pooled=up, ground=bool(a.ground))
+                save_image(img[0], os.path.join(d, f"{i}.png"))
+            print(f"    [{tag(st, lk)}] {a.n} obrazow -> {d}", flush=True)
     print("\nDONE", flush=True)
 
 

@@ -317,6 +317,7 @@ def compose_sample_single(
     num_inference_steps: int = 50, guidance_scale: float = 7.5,
     height: Optional[int] = None, width: Optional[int] = None, generator=None, scheduler=None,
     uncond_pooled: Optional[torch.Tensor] = None, ground: bool = False,
+    self_strength: float = 0.0, self_leak: float = 0.0, self_sched: float = 0.5,
 ):
     """JEDNO przejscie UNetu na krok. Koszt NIEZALEZNY od liczby komponowanych konceptow --
     to jest ta wlasciwosc, ktora niesie teze pracy; `compose_sample_regions` (ich rown. 4-5)
@@ -341,10 +342,23 @@ def compose_sample_single(
     delty takze na `to_q`/`to_out.0`. Jesli podmioty znow beda sie zlewac, to jest pierwsza
     dzwignia do sprawdzenia, a nie dowod, ze jedno przejscie nie dziala.
 
+    `self_strength > 0`: MIEKKA separacja samo-uwagi (attn1) miedzy strefami, w jednostkach
+    logitu. To jest jedyne miejsce, w ktorym powstaje "jeden spojny obiekt": attn2 trasuje
+    tresc, ale to attn1 sklei ja w jedna sylwetke przez granice ramek. UWAGA: wszystkie
+    dotychczasowe proby "przecieku" szly z `strength=None`, czyli kara 1e4 -- a wtedy `leak`
+    jest BEZCZYNNE (kazda wartosc ponizej 1 to po softmaxie -inf; zmierzone 2026-08-31:
+    leak=0.5 dal liczby identyczne z leak=0.0). Czyli werdykt "izolacja attn1 niszczy
+    generacje" dotyczy TWARDEJ izolacji, a miekka nie ma ani jednego pomiaru.
+
+    `self_sched`: separacja zyje tylko przez poczatkowa frakcje krokow (uklad rozstrzyga sie
+    przy wysokim szumie, a ciecie attn1 w poznych krokach zjada teksture). Realizowane przez
+    ten sam gate co kappa, wiec przy `ground=True` oba mechanizmy dziela harmonogram
+    groundingu -- celowo, bo oba dzialaja na etapie ukladu.
+
     regions: [{'task_idx', 'hidden', 'token_mask', 'box'}] -- 'pooled' nie jest uzywane,
     bo hipersiec warunkuje sie tu kanonicznym kluczem konceptu, nie promptem regionu.
     """
-    from .regional import set_region_kv
+    from .regional import set_region_kv, set_regional_self
     device, dtype = bundle.device, bundle.dtype
     height = height or bundle.default_resolution
     width = width or bundle.default_resolution
@@ -378,14 +392,19 @@ def compose_sample_single(
     if not ground:
         manager.set_ground(None)          # czysci ramke z poprzedniego wywolania
     set_region_kv(bundle.unet, regions, manager, ground)
+    sep = float(self_strength) > 0
+    if sep:
+        set_regional_self(bundle.unet, [r["box"] for r in regions], leak=float(self_leak),
+                          strength=float(self_strength), manager=manager)
     try:
         steps = list(scheduler.timesteps)
         for i, t in enumerate(steps):
-            if ground:                    # harmonogram kappa, jak w ddim_sample
+            if ground or sep:             # harmonogram kappa, jak w ddim_sample
                 frac = i / max(1, len(steps))
+                lim = (float(getattr(manager, "ground_sched_frac", 1.0)) if ground
+                       else float(self_sched))
                 manager.ground_gain = (float(getattr(manager, "ground_gain_base", 1.0))
-                                       if frac < float(getattr(manager, "ground_sched_frac", 1.0))
-                                       else 0.0)
+                                       if frac < lim else 0.0)
             inp = scheduler.scale_model_input(latents, t)
             eps_c = bundle.unet(inp, t, encoder_hidden_states=gh,
                                 added_cond_kwargs=ac_g or None).sample
@@ -398,6 +417,8 @@ def compose_sample_single(
             latents = scheduler.step(eps, t, latents).prev_sample
     finally:
         set_region_kv(bundle.unet, None, manager)
+        if sep:
+            set_regional_self(bundle.unet, None)
         for r in regions:
             r.pop("lora", None)
         if ground:

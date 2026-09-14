@@ -274,8 +274,12 @@ class RegionalSelfAttnProcessor:
         scores = torch.baddbmm(
             torch.zeros(q.shape[0], q.shape[1], k.shape[1], device=q.device, dtype=q.dtype),
             q, k.transpose(-1, -2), beta=0, alpha=attn.scale)
-        active = (self.manager is None
-                  or float(getattr(self.manager, "ground_gain", 1.0)) > 0)
+        # Separacja dotyczy galezi WARUNKOWEJ. Predykcja bezwarunkowa ma byc czystym priorem
+        # modelu, inaczej roznica CFG przestaje izolowac warunkowanie -- ta sama poprawka co
+        # w RegionalAttnProcessor.
+        active = self.manager is None or (
+            float(getattr(self.manager, "ground_gain", 1.0)) > 0
+            and bool(getattr(self.manager, "lora_enabled", True)))
         bias = self._bias(n, q.device, q.dtype)             if (encoder_hidden_states is None and active) else None
         if bias is not None:
             scores = scores + bias[None]
