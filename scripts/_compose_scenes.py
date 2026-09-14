@@ -70,6 +70,10 @@ def parse_args():
                          "'sila:przeciek:max_bok' po przecinku, np. '2:0:16,1:0:32,0.5:0:0'. "
                          "Sila w jednostkach logitu (0 = bez separacji), max_bok ogranicza "
                          "kare do map ukladu (0 = wszystkie). Punkt do wlasnego podkatalogu")
+    ap.add_argument("--scale_grid", default="",
+                    help="wartosci --scale po przecinku, np. '0.4,0.55,0.7'. Sila adaptera "
+                         "rzadzi tozsamoscia; w tym torze ITP renderuje galaz globalna BEZ "
+                         "adaptera, wiec koszt po stronie TA jest mniejszy niz w tabeli")
     ap.add_argument("--boot_grid", default="",
                     help="tryb unp1: wartosci --bootstrap po przecinku, np. '0,4,8'. Szare "
                          "tlo w bootstrapie wychodzi na obrazie, wiec to jest oś do zmiatania")
@@ -234,15 +238,20 @@ def main():
         f = (x.split(":") + ["0", "0"])[:3]
         return float(f[0]), float(f[1] or 0), int(float(f[2] or 0))
 
-    if a.self_grid:
-        points = [(_pt(x), a.bootstrap) for x in a.self_grid.split(",") if x.strip()]
+    base_pt = _pt(a.self_grid.split(",")[0]) if a.self_grid else (0.0, 0.0, 0)
+    if a.scale_grid:
+        points = [(base_pt, a.bootstrap, float(x)) for x in a.scale_grid.split(",") if x.strip()]
+    elif a.self_grid:
+        points = [(_pt(x), a.bootstrap, a.scale) for x in a.self_grid.split(",") if x.strip()]
     elif a.boot_grid:
-        points = [((0.0, 0.0, 0), int(x)) for x in a.boot_grid.split(",") if x.strip()]
+        points = [((0.0, 0.0, 0), int(x), a.scale) for x in a.boot_grid.split(",") if x.strip()]
     else:
-        points = [((0.0, 0.0, 0), a.bootstrap)]
-    graded = bool(a.self_grid or a.boot_grid)
+        points = [((0.0, 0.0, 0), a.bootstrap, a.scale)]
+    graded = bool(a.self_grid or a.boot_grid or a.scale_grid)
 
-    def tag(pt, boot):
+    def tag(pt, boot, sc):
+        if a.scale_grid:
+            return f"sc{sc:g}"
         if a.boot_grid:
             return f"b{boot}"
         st, lk, sres = pt
@@ -273,9 +282,11 @@ def main():
                              "box": r["box"],
                              "token_mask": tm if cfg.get("token_mask_lora") else None})
 
-        for pt, boot in points:
+        for pt, boot, sc in points:
             st, lk, sres = pt
-            d = os.path.join(a.out, tag(pt, boot), s["id"]) if graded \
+            if not a.dry_run:
+                manager.lora_scale = sc   # migawki LoRA powstaja w samplerze
+            d = os.path.join(a.out, tag(pt, boot, sc), s["id"]) if graded \
                 else os.path.join(a.out, s["id"])
             os.makedirs(d, exist_ok=True)
             draw_layout(s, regions, os.path.join(d, "layout.png"))
@@ -289,7 +300,7 @@ def main():
                          "config": a.config, "ckpt": a.ckpt, "commit": commit,
                          "backbone": str(cfg.get("sd_model_id", "")), "resolution": res,
                          "steps": a.steps, "guidance_scale": a.cfg, "alpha": a.alpha,
-                         "lora_scale": a.scale, "bootstrap_steps": boot,
+                         "lora_scale": sc, "bootstrap_steps": boot,
                          "regional_steps": rs, "ground": bool(a.ground),
                          "self_strength": st, "self_leak": lk,
                          "self_res": sres or None, "self_bg_shared": bool(a.self_bg),
@@ -328,7 +339,7 @@ def main():
                                                  bootstrap_steps=boot,
                                                  uncond_pooled=up, ground=bool(a.ground))
                 save_image(img[0], os.path.join(d, f"{i}.png"))
-            print(f"    [{tag(pt, boot)}] {a.n} obrazow -> {d}", flush=True)
+            print(f"    [{tag(pt, boot, sc)}] {a.n} obrazow -> {d}", flush=True)
     print("\nDONE", flush=True)
 
 
