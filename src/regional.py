@@ -66,7 +66,7 @@ def derive_masks(n_concepts: int, gate=None, min_frac: float = 0.02, tau: float 
 
 class RegionalAttnProcessor:
     def __init__(self, regions, strength: Optional[float] = None, collect: bool = False,
-                 confine: bool = False):
+                 confine: bool = False, manager=None):
         """`confine=True`: a single region per pass -- positions OUTSIDE the box are stopped from
         attending to that concept's tokens, so the subject forms INSIDE the box. This is what makes
         CIDM's per-region pass (eq. 4 conditions on [c_u, s_u]) place its subject in the region
@@ -81,21 +81,26 @@ class RegionalAttnProcessor:
             box, tm = r[0], r[1]
             is_global = bool(r[2]) if len(r) > 2 else False
             norm.append((box, tm, is_global))
+        # `manager`: potrzebny WYLACZNIE po to, zeby odroznic przebieg warunkowy od
+        # bezwarunkowego -- patrz komentarz w `__call__`. Bez niego kara trafia w oba.
         self.regions = norm
         self.strength = strength
         self.collect = collect
         self.confine = confine
+        self.manager = manager
         self._cache = {}
 
     @torch.no_grad()
     def _accumulate(self, probs, B: int, n_img: int) -> None:
         """probs [B*heads, n_img, 77] -> per-concept attention map, averaged over heads,
-        conditional half only, upsampled to a common resolution."""
+        upsampled to a common resolution. Wywolywane tylko z przebiegu warunkowego (bramka
+        `cond_pass` w `__call__`), wiec caly batch jest tu warunkowy -- dawne ciecie `[B//2:]`
+        przy B>1 gubilo polowe probek, a przy B=1 nic nie robilo."""
         side = int(round(n_img ** 0.5))
         if side * side != n_img or side < 8:            # skip the coarsest maps
             return
         heads = probs.shape[0] // B
-        p = probs.view(B, heads, n_img, -1)[B // 2:].mean(dim=(0, 1))     # [n_img, 77]
+        p = probs.view(B, heads, n_img, -1).mean(dim=(0, 1))              # [n_img, 77]
         for i, (_, tm, _) in enumerate(self.regions):
             sel = tm.reshape(-1)[: p.shape[1]].to(p.device) > 0
             if not bool(sel.any()):
@@ -157,14 +162,16 @@ class RegionalAttnProcessor:
         B, n_img, _ = q.shape
         q = attn.head_to_batch_dim(q); k = attn.head_to_batch_dim(k); v = attn.head_to_batch_dim(v)
 
+        # Uklad dotyczy WYLACZNIE galezi warunkowej. Nasze samplery licza cond i uncond
+        # ODDZIELNYMI wywolaniami UNetu, a nie sklejonym batchem [uncond, cond], wiec dawny
+        # podzial `full[B//2:]` nigdy tych przebiegow nie rozroznial: przy B=1 wychodzilo
+        # `full[0:] = bias`, czyli kara ukladu ladowala takze w predykcji bezwarunkowej, a CFG
+        # mnozy jej blad przez (1 - guidance). Rozrozniac je potrafi tylko manager, bo przebieg
+        # uncond zawsze idzie pod `manager.no_lora()`.
+        cond_pass = self.manager is None or bool(getattr(self.manager, "lora_enabled", True))
         bias = None
-        if encoder_hidden_states is not None and self.regions:
+        if encoder_hidden_states is not None and self.regions and cond_pass:
             bias = self._bias(n_img, k.shape[1], q.device, q.dtype)     # [n_img, n_tok]
-            heads = q.shape[0] // B
-            # CFG: batch is [uncond, cond]; the layout applies to the conditional half only
-            full = torch.zeros(B, n_img, k.shape[1], device=q.device, dtype=q.dtype)
-            full[B // 2:] = bias if B > 1 else bias
-            bias = full.repeat_interleave(heads, dim=0)
 
         scores = torch.baddbmm(
             torch.zeros(q.shape[0], q.shape[1], k.shape[1], device=q.device, dtype=q.dtype),
@@ -172,7 +179,7 @@ class RegionalAttnProcessor:
         if bias is not None:
             scores = scores + bias
         probs = scores.softmax(dim=-1).to(v.dtype)
-        if encoder_hidden_states is not None and self.collect:
+        if encoder_hidden_states is not None and self.collect and cond_pass:
             self._accumulate(probs, B, n_img)
         hidden_states = torch.bmm(probs, v)
         hidden_states = attn.batch_to_head_dim(hidden_states)
@@ -270,14 +277,18 @@ class RegionalSelfAttnProcessor:
 
 
 def set_regional(unet, regions, strength=None, collect: bool = False,
-                 confine: bool = False) -> int:
-    """Install the regional processor on every attn2; `regions=None` restores defaults."""
+                 confine: bool = False, manager=None) -> int:
+    """Install the regional processor on every attn2; `regions=None` restores defaults.
+
+    Podaj `manager`, jesli przebieg bezwarunkowy leci przez TEN SAM procesor (tak robi
+    `ddim_sample`) -- inaczej kara ukladu trafi rowniez w niego."""
     from diffusers.models.attention_processor import AttnProcessor
     n = 0
     for name, mod in unet.named_modules():
         if name.endswith("attn2") and hasattr(mod, "set_processor"):
             mod.set_processor(AttnProcessor() if not regions
-                              else RegionalAttnProcessor(regions, strength, collect, confine))
+                              else RegionalAttnProcessor(regions, strength, collect, confine,
+                                                         manager))
             n += 1
     return n
 

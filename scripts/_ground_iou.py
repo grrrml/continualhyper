@@ -388,7 +388,7 @@ for kap, sched, conf in GRID:
                 cx, cy, bw, bh = box
                 set_regional(bundle.unet, [((cx - bw / 2, cy - bh / 2,
                                              cx + bw / 2, cy + bh / 2), bspan, False)],
-                             confine=True)
+                             confine=True, manager=manager)
             if a.self_leak >= 0:
                 # UWAGA na dwie konwencje ramki w tym samym pliku: GSA (geo_inside) uzywa
                 # (cx,cy,w,h), a _region_vec dla procesorow regionalnych uzywa (x0,y0,x1,y1).

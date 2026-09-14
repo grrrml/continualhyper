@@ -101,10 +101,11 @@ def main():
                         set_regional(bundle.unet,
                                      None if nobox else [(b1, m1, False), (b2, m2, g2)],
                                      strength=(a.strength if a.mode == "soft" else None),
-                                     collect=bool(a.attn_masks) and not g2)
+                                     collect=bool(a.attn_masks) and not g2,
+                                     manager=manager)
                         if nobox:      # zbieraj uwage bez narzucania ukladu
                             set_regional(bundle.unet, [(ALLBOX, m1, False), (ALLBOX, m2, False)],
-                                         strength=0.0, collect=True)
+                                         strength=0.0, collect=True, manager=manager)
                         if a.self_leak >= 0 and not g2 and not nobox:
                             set_regional_self(bundle.unet, [b1, b2], leak=a.self_leak)
                     if a.attn_masks and not g2:
@@ -127,7 +128,7 @@ def main():
                                  {"task_idx": j2, "token_mask": m2.cuda(), "box": dm[1]}])
                             set_regional(bundle.unet, [(dm[0], m1, False), (dm[1], m2, g2)],
                                          strength=(a.strength if a.mode == "soft" else None),
-                                         collect=True)
+                                         collect=True, manager=manager)
                             if a.self_leak >= 0:
                                 set_regional_self(bundle.unet, [dm[0], dm[1]], leak=a.self_leak)
                             if not _s["on"]:
