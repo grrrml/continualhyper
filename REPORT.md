@@ -1090,9 +1090,11 @@ przebiegu — rozne sa tylko K/V w 16 (SD-1.5) / 70 (SDXL) warstwach attn2, a ni
 Tor jednoprzebiegowy to rozszerzony `RegionKVAttnProcessor`. Trzy zmiany:
 - **wstrzyk GSA per region** (`_gsa`, adresowany ramka regionu). Sierpniowy werdykt
   („regionalna uwaga trasuje tresc, ale nie wymusza liczby podmiotow", region_rewrite
-  redukowal dwa podmioty do jednego) dotyczyl GOLEGO maskowania uwagi i **stoi** — ta sciezka
-  byla testowana poprawnie, bo `_compose_unp1.py --kv 1` odinstalowuje procesor wokol
-  przebiegu uncond, wiec blad z `RegionalAttnProcessor` jej nie dotyczyl. Ale galaz
+  redukowal dwa podmioty do jednego) dotyczyl GOLEGO maskowania uwagi. Ta sciezka byla
+  testowana poprawnie w tym sensie, ze `_compose_unp1.py --kv 1` odinstalowuje procesor wokol
+  przebiegu uncond, wiec blad z `RegionalAttnProcessor` jej nie dotyczyl — ale mierzyla tor
+  z POLOWA adaptera (patrz nizej), wiec jako dowod przeciwko jednemu przejsciu jest slabsza,
+  niz wygladala. Do tego galaz
   groundingu powstala PO tamtym werdykcie (GO 20.08 wobec kompozycji zaparkowanej 09.08)
   i jest UCZONA pchac mase konceptu do ramki, czyli robi to, czego samo maskowanie nie umie.
   To jest strzal, ktorego nigdy nie oddalismy.
@@ -1104,11 +1106,21 @@ Tor jednoprzebiegowy to rozszerzony `RegionKVAttnProcessor`. Trzy zmiany:
   w KAZDEJ warstwie attn2, dla kazdego regionu i kazdego kroku — na SDXL 70 x U x 50 pelnych
   forwardow hipersieci 87.5 M na jeden obraz.
 
-**Ograniczenie toru jednoprzebiegowego, znac przy czytaniu wynikow:** `RegionKVAttnProcessor`
-liczy `q` globalnie i `to_out` bez adaptera (zachowanie referencyjne Mix-of-Show), wiec dziala
-tam WYLACZNIE tekstowa polowa naszej LoRA (`to_k`/`to_v`), a nasze checkpointy maja delty
-takze na `to_q`/`to_out.0`. Jesli podmioty znow beda sie zlewac, **to jest pierwsza dzwignia
-do sprawdzenia**, a nie dowod, ze jedno przejscie nie dziala.
+**POLOWA ADAPTERA BYLA NIEUZYWANA — naprawione 14.09.** `RegionKVAttnProcessor` liczyl `q`
+raz globalnie i `to_out` raz na juz scalonym wyjsciu, oba pod `no_lora()`. Powody byly rozne
+i tylko jeden byl decyzja: `q` globalne to wiernosc wobec `region_rewrite` z Mix-of-Show
+(ktory podmienia wylacznie K/V), a `to_out` pod `no_lora()` to **zabezpieczenie przed bledem** —
+wykonywalo sie PO wklejeniu wszystkich regionow, wiec aktywny bylby adapter OSTATNIEGO z nich
+i rozsmarowalby delte jednego konceptu po calym kadrze. Skutek laczny: w torze
+jednoprzebiegowym dzialala wylacznie TEKSTOWA polowa naszej LoRA (`to_k`/`to_v`), podczas gdy
+hipersiec generuje delty na wszystkich czterech projekcjach.
+
+Teraz kazda galaz (tlo + kazdy region) przechodzi `to_q`, `to_k`, `to_v`, uwage, wstrzyk GSA
+i `to_out` **pod swoim adapterem**, a scalanie jest PO `to_out`. Dla tla nic to nie zmienia,
+bo `to_out` jest afiniczne (scalenie przed i po jest przy tych samych wagach tozsame), a
+regionom daje ich wlasna projekcje wyjsciowa. Koszt: U+1 mnozen d x d na warstwe, czyli nic
+wobec uwagi, ktora i tak liczy sie U+1 razy. Kontrola 9 w `_verify_regional.py` sprawdza to
+wprost: loguje, ktory adapter byl aktywny przy kazdej z czterech projekcji.
 
 **Potok jest niezalezny od checkpointu** — zalezne sa tylko same obrazy. Czego brakuje:
 sklejka rysunku, ktora wymaga decyzji, ktore sceny i skad panele CIDM

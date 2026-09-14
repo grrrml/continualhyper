@@ -319,15 +319,20 @@ def set_regional_self(unet, boxes, leak: float = 0.0, strength=None, manager=Non
 
 
 class RegionKVAttnProcessor:
-    """attn2 with per-region K/V REPLACEMENT (Mix-of-Show region_rewrite, done properly).
+    """attn2 per region -- JEDNO przejscie UNetu, koszt niezalezny od liczby konceptow.
+
+    Nazwa jest historyczna (wzorcem byl `region_rewrite` z Mix-of-Show, ktory podmienia tylko
+    K/V). U nas galaz regionu przechodzi przez WSZYSTKIE cztery projekcje pod swoim adapterem
+    -- `to_q`, `to_k`, `to_v` i `to_out.0` -- bo tyle generuje hipersiec; ograniczenie do K/V
+    zostawialo polowe metody nieuzyta. Szczegoly w docstringu `_branch`.
 
     Positions inside region u attend to that region's OWN prompt sequence (with region u's
-    adapter applied to its K/V); positions outside any region attend to the global prompt.
+    adapter applied); positions outside any region attend to the global prompt.
     The concept simply does not exist in the conditioning outside its box -- which is the only
     thing that works, because CLIP's causal encoder smears each concept into every subsequent
     token, so masking the concept span can never remove it (measured: audit 2885915).
 
-    One UNet pass; U+1 attention computes in the 16 attn2 layers only.
+    One UNet pass; U+1 attention computes in the attn2 layers only (16 on SD-1.5, 70 on SDXL).
 
     regions: [{'hidden': [1,77,768] encoder states of the region prompt,
                'task_idx': int, 'box': bbox or dense mask, 'token_mask': [1,77] or None}]
@@ -361,11 +366,42 @@ class RegionKVAttnProcessor:
         B, n_img, _ = hidden_states.shape
 
         m = self.manager
-        with m.no_lora():                          # ONE global query, as in the reference
-            q_g = attn.head_to_batch_dim(attn.to_q(hidden_states))
+        cond_pass = bool(getattr(m, "lora_enabled", True))
 
-        def _attend(ctx, region=None):
-            # region identity enters through K/V only; q stays global (reference behaviour)
+        def _project(ctx, region):
+            """to_q, to_k, to_v, uwaga, wstrzyk GSA i to_out -- wszystko pod TYM adapterem,
+            ktory jest akurat w cache'u. Zwraca [B, n, d], czyli juz po `to_out`."""
+            q_ = attn.head_to_batch_dim(attn.to_q(hidden_states))
+            k_ = attn.head_to_batch_dim(attn.to_k(ctx))
+            v_ = attn.head_to_batch_dim(attn.to_v(ctx))
+            s_ = torch.baddbmm(torch.zeros(q_.shape[0], q_.shape[1], k_.shape[1],
+                                           device=q_.device, dtype=q_.dtype),
+                               q_, k_.transpose(-1, -2), beta=0, alpha=attn.scale)
+            o_ = torch.bmm(s_.softmax(dim=-1).to(v_.dtype), v_)
+            side_ = int(round(n_img ** 0.5))
+            if (region is not None and self.ground and getattr(m, "ground_gsa", False)
+                    and side_ * side_ == n_img):
+                inj = self._gsa(attn, hidden_states, side_, o_)
+                if inj is not None:
+                    o_ = o_ + inj          # jak w GroundedAttnProcessor: wstrzyk idzie przez to_out
+            return attn.to_out[1](attn.to_out[0](attn.batch_to_head_dim(o_)))
+
+        def _branch(ctx, region=None):
+            """CALA galaz attn2 dla jednego kontekstu, pod JEDNYM adapterem.
+
+            Dawniej `q` liczylo sie raz globalnie, a `to_out` raz na juz scalonym wyjsciu, oba
+            pod `no_lora()`. Pierwsze bylo wiernoscia wobec Mix-of-Show (region_rewrite podmienia
+            wylacznie K/V), drugie zabezpieczeniem: `to_out` wykonywalo sie PO wklejeniu
+            wszystkich regionow, wiec aktywny bylby adapter OSTATNIEGO z nich i rozsmarowalby
+            delte jednego konceptu po calym kadrze. Skutek uboczny byl taki, ze w tym torze
+            dzialala tylko TEKSTOWA polowa naszej LoRA, a hipersiec generuje delty na wszystkich
+            czterech projekcjach (`to_q`, `to_k`, `to_v`, `to_out.0`).
+
+            Teraz kazda galaz liczy sie w calosci pod swoim adapterem, a scalanie jest PO
+            `to_out`. Dla tla nic to nie zmienia -- `to_out` jest afiniczne, wiec przy tych
+            samych wagach scalenie przed i po jest tozsame -- a regionom daje ich wlasna
+            projekcje wyjsciowa. Koszt: U+1 mnozen d x d na warstwe, czyli nic wobec uwagi,
+            ktora i tak liczy sie U+1 razy."""
             if is_cross and region is not None:
                 snap = region.get("lora")
                 if snap is not None:          # policzone raz przed samplingiem, patrz
@@ -375,23 +411,17 @@ class RegionKVAttnProcessor:
                     m.set_context(m.canon_pooled[ti:ti + 1], task_idx=ti,
                                   token_mask=region.get("token_mask"))
                     m.compute_and_cache_loras()
-                k_ = attn.to_k(ctx); v_ = attn.to_v(ctx)
-            else:
-                with m.no_lora():
-                    k_ = attn.to_k(ctx); v_ = attn.to_v(ctx)
-            k_ = attn.head_to_batch_dim(k_); v_ = attn.head_to_batch_dim(v_)
-            s_ = torch.baddbmm(torch.zeros(q_g.shape[0], q_g.shape[1], k_.shape[1],
-                                           device=q_g.device, dtype=q_g.dtype),
-                               q_g, k_.transpose(-1, -2), beta=0, alpha=attn.scale)
-            return torch.bmm(s_.softmax(dim=-1).to(v_.dtype), v_)
+                return _project(ctx, region)
+            with m.no_lora():                 # tlo i przebieg uncond: czysty model
+                return _project(ctx, None)
 
-        out = _attend(ctx_g)                       # global: no adapter
+        out = _branch(ctx_g)                  # tlo: prompt globalny (ITP), bez adaptera
 
         # Przebieg bezwarunkowy ma zobaczyc CZYSTY prompt negatywny w calym kadrze: bez
         # regionow, bez adapterow. Bez tej bramki wolajacy musial odinstalowywac procesor
         # wokol kazdego wywolania uncond (tak robi `_compose_unp1.py --kv 1`) -- latwo
         # zapomniec, a skutek jest cichy. `lora_enabled` rozroznia je jednoznacznie.
-        if is_cross and self.regions and bool(getattr(m, "lora_enabled", True)):
+        if is_cross and self.regions and cond_pass:
             side = int(round(n_img ** 0.5))
             if side * side == n_img:
                 for r in self.regions:
@@ -404,16 +434,9 @@ class RegionKVAttnProcessor:
                         ctx_r = ctx_r.expand(B, -1, -1)
                     if self.ground:
                         m.set_ground(r["task_idx"], box_to_cxcywh(r["box"]))
-                    o_r = _attend(ctx_r, r)
-                    if self.ground and getattr(m, "ground_gsa", False):
-                        inj = self._gsa(attn, hidden_states, side, o_r)
-                        if inj is not None:
-                            o_r = o_r + inj
+                    o_r = _branch(ctx_r, r)
                     pm = vec.to(dtype=out.dtype)[None, :, None]
-                    out = out * (1 - pm) + o_r * pm       # paste region output inside its box
-        out = attn.batch_to_head_dim(out)
-        with self.manager.no_lora():               # keep the last region's cache out of to_out
-            out = attn.to_out[1](attn.to_out[0](out))
+                    out = out * (1 - pm) + o_r * pm   # wklej wyjscie regionu w jego ramke
         if ndim == 4:
             out = out.transpose(-1, -2).reshape(b, c, h, w)
         if attn.residual_connection:

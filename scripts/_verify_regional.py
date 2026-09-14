@@ -49,18 +49,19 @@ class StubManager:
     def __init__(self, lora_enabled=True):
         self.lora_enabled = lora_enabled
         self.ground_gsa = False
+        self.active = None          # ktory adapter jest "w cache" -- do kontroli 9
 
     @contextlib.contextmanager
     def no_lora(self):
-        prev = self.lora_enabled
-        self.lora_enabled = False
+        prev, prev_a = self.lora_enabled, self.active
+        self.lora_enabled, self.active = False, None
         try:
             yield
         finally:
-            self.lora_enabled = prev
+            self.lora_enabled, self.active = prev, prev_a
 
     def restore_lora(self, snap):
-        pass
+        self.active = snap[0]
 
 
 def run(regions, manager, **kw):
@@ -143,6 +144,26 @@ def main():
     print(f"8) box_to_cxcywh: {tuple(round(x, 4) for x in got)} (ma byc {exp}); "
           f"gesta maska -> {box_to_cxcywh(torch.zeros(4, 4))}")
     ok = ok and same and box_to_cxcywh(torch.zeros(4, 4)) is None
+    # 9) KTORE projekcje widza adapter regionu. To jest kontrola, ktora zlapalaby dziure
+    #    sprzed poprawki: `to_q` liczylo sie raz globalnie, a `to_out` raz na scalonym
+    #    wyjsciu, oba pod no_lora(), wiec adapter regionu dotykal tylko `to_k`/`to_v`.
+    attn = StubAttn()
+    mgr = StubManager(lora_enabled=True)
+    log = []
+    for nm in ("to_q", "to_k", "to_v"):
+        getattr(attn, nm).register_forward_hook(
+            lambda mod, i, o, nm=nm: log.append((nm, mgr.active)))
+    attn.to_out[0].register_forward_hook(lambda mod, i, o: log.append(("to_out", mgr.active)))
+    proc = RegionKVAttnProcessor([{"task_idx": 0, "hidden": torch.randn(1, 8, 8), "box": L,
+                                   "lora": ("snap", None)}], mgr, "mid.attn2", False)
+    with torch.no_grad():
+        proc(attn, torch.randn(1, 256, 8), encoder_hidden_states=torch.randn(1, 8, 8))
+    tlo = {nm for nm, a in log if a is None}
+    reg = {nm for nm, a in log if a == "snap"}
+    czte = {"to_q", "to_k", "to_v", "to_out"}
+    print(f"9) galaz tla    widzi: {sorted(tlo)}  (ma byc bez adaptera, wszystkie 4)")
+    print(f"   galaz regionu widzi: {sorted(reg)}  (ma byc {sorted(czte)})")
+    ok = ok and tlo == czte and reg == czte
     print("\n" + ("OK" if ok else "BLAD"))
     return 0 if ok else 1
 
