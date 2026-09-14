@@ -2,7 +2,7 @@
 
 > Żywy dokument-pamięć projektu: syntetyczny obraz "gdzie jesteśmy i skąd to wiemy".
 > Aktualizowany po każdym domknięciu wątku (werdykt, faza, decyzja ramowa).
-> Szczegółowy dziennik pomiarów i odrzuceń: `assets/STATUS.md`. Stan na: **2026-09-14 (wieczor)**.
+> Szczegółowy dziennik pomiarów i odrzuceń: `assets/STATUS.md`. Stan na: **2026-09-14 (noc)**.
 
 ---
 
@@ -1034,12 +1034,73 @@ a nie na polu `objective`: kara 0.05 za ekstrapolacje byla pomyslana pod optymal
 i przy modelu liniowym psulaby estymaty. Punktom z `interp_t50: false` dosylac brakujaca skale
 i przeliczac.
 
-**Nastepny krok: kompozycja wielokonceptowa** (decyzja z 14.09 — robimy ja rownolegle do sweepu).
-Kodu po naszej stronie **nie ma**; doklejamy sie do obrazow z pracy CIDM.
-`assets/cidm_composition_notes.md` ma juz 11 scen z Figure 3 i 6, prompty przepisane doslownie
-z ich zrodla TeX i geometrie ramek odczytana z wektorow w ich PDF-ach (nie z oka).
-**Potok jest niezalezny od checkpointu** — budowac teraz, generowac na zwycieskiej recepturze
-pozniej; zalezne od checkpointu sa tylko same obrazy.
+**Kompozycja wielokonceptowa — POTOK ZBUDOWANY (2026-09-14), czeka na GPU.** Decyzja z 14.09:
+robimy ja rownolegle do sweepu, doklejajac sie do scen z pracy CIDM. Stan:
+
+- `assets/composition/scenes.json` — 11 scen z Rys. 3 i 12 w postaci maszynowej: ITP/RTP
+  przepisane doslownie, geometria ramek z wektorow ich PDF-ow, parowanie koncept↔ramka po
+  KOLORZE (w scenach 3.2, 3.4, 3.5 i 12.1 rozni sie od kolejnosci w RTP — przepisanie promptu
+  „z figury" daje zle przypisanie). Mapowanie `V<k>` → task `k−1` jest bitowe wobec kolejnosci
+  konceptow w `P_paper` / `X_sdxl_*` / `R_tail_*`; sterownik to sprawdza i przerywa przy
+  rozjezdzie. Ramki sa rozlaczne we wszystkich 11 scenach (zweryfikowane) — wagi scalania
+  w rowaniu 5 sumuja sie wtedy do 1 wszedzie.
+- `src/sampling.py::compose_sample_regions` — **dziala teraz na SDXL**. Dotad nie mogl:
+  nie podawal `added_cond_kwargs`, wiec na SDXL wywalal sie od razu, mial zaszyte 512 i
+  dekodowal VAE bez dzielenia na kawalki (~1 GB aktywacji na obraz przy 1024). Doszly:
+  pooled promptu negatywnego w galezi uncond (ta sama poprawka co w `ddim_sample` z 07.09)
+  oraz `--ground`, czyli NASZ grounding GSA zaadresowany ramka regionu — to, czego ich
+  rownania nie maja.
+- `scripts/_compose_scenes.py` — sterownik. `--dry_run 1` buduje prompty, manifesty i
+  `layout.png` (nasz odpowiednik ich panelu „Region Boxes") **bez GPU i bez wag**; przebieg
+  zapisuje obok obrazow `manifest.json` z kazda nasza decyzja (rozdzielczosc, sampler, kroki,
+  ziarno, negatyw), bo praca zadnej z nich nie podaje.
+- **Scena 3.5 rozstrzygnieta OBRAZEM, nie domyslem (14.09).** RTP i etykieta ramki mowia
+  „V9 dog", a V9 to u nich kot. W ICH WLASNYM panelu „Ours" w prawej ramce jest **pies**:
+  gladkowlosy corgi w skafandrze, zgodny z miniatura Task 7 (V7) z tej samej figury i wyraznie
+  inny od duzego, puchatego V1 w srodkowej ramce; szary kot rosyjski z miniatury Task 9 (V9)
+  nie wystepuje w kadrze w ogole. Czyli „V9" to blad etykiety zamiast **V7** — i w RTP,
+  i przy ramce. Notatki mialy to jako `[INFERENCE]`; teraz jest `[FIGURE]`. Domyslny odczyt
+  `v7`, `--scene35 v9|literal` odtwarza figure jak wydrukowana. Rys. 3 NIE MA w repo CIDM
+  (jest tylko Rys. 12) — sprawdzone na renderze HTML arXiv, kopia w `data/cidm_figs/`
+  (poza gitem; arXiv nie daje praw redystrybucji, do publikacji tylko kopia Apache-2.0 z repo).
+- Pary tej samej klasy (dwa psy, dwa koty) w 5 z 11 scen **nie wymagaja identyfikatorow**:
+  przy rowaniu 4-5 kazdy region ma wlasny prompt i wlasny klucz adaptera, wiec brak
+  `<V1>` na SDXL nie blokuje ani jednej sceny. Wczesniejsze „`F_base` nie potrafi pary
+  same-class" dotyczylo JEDNEGO przebiegu ze wspolnym promptem.
+
+**Potok jest niezalezny od checkpointu** — zalezne sa tylko same obrazy. Czego brakuje:
+sklejka rysunku, ktora wymaga decyzji, ktore sceny i skad panele CIDM
+(patrz `assets/composition/README.md`).
+
+**`X_sdxl_800aug_fix` JEST WYRAZNIE GORSZY NIZ `X_sdxl_ground_800aug` — do wyjasnienia.**
+Wypadlo przy wyborze checkpointu do kompozycji. Ten sam przepis (`diff` configow to tylko
+`output_dir` i `wandb.name`), retrenowany 09.09 na kodzie po trzech poprawkach SDXL:
+
+| ckpt | s=0.4 | s=0.5 | s=0.6 |
+|---|---|---|---|
+| `X_sdxl_ground_800aug` (stary kod) | 0.8015 / 0.7927 / 0.5967 | 0.7735 / 0.8092 / 0.6208 | 0.7516 / 0.8209 / 0.6398 |
+| `X_sdxl_800aug_fix` (nowy kod) | 0.7692 / 0.7505 / 0.5243 | 0.7509 / 0.7678 / 0.5628 | 0.7370 / 0.7831 / 0.5912 |
+
+(TA / IA / DINO, `eval10f`, `average_final`.) Cala krzywa lezy nizej: przy zrownanym TA to
+okolo **−6 IA i −7 DINO**, czyli 5x ponad zmierzony rozrzut miedzyseedowy SDXL (1.20 IA).
+Poprawka (1) (pooled uncond) jest inference-only i zmierzona jako NULL, wiec zostaja (2) logity
+fp32 w groundingu i (3) mikro-warunkowanie z prawdziwego rozmiaru zrodla — albo cos poza ta
+trojka. **Nie scigam tego teraz**, ale kazde zdanie o SDXL na naprawionym kodzie stoi na tej
+liczbie, wiec to jest do rozbrojenia przed pisaniem. Do kompozycji biore `ground_800aug`
+(najlepszy punkt SDXL wobec CIDM, ten z wiersza „Stan wobec CIDM") przy **s=0.4**, czyli
+zrownanym TA wobec ich 80.0.
+
+**Przeciek do galezi bezwarunkowej w `RegionalAttnProcessor` — NAPRAWIONE (2026-09-14).**
+Kara ukladu miala dzialac tylko w przebiegu warunkowym, a podzial `full[B//2:]` zakladal
+sklejony batch `[uncond, cond]`. Nasze samplery licza cond i uncond **oddzielnymi** wywolaniami
+UNetu z B=1, wiec `full[0:] = bias` — kara ladowala takze w predykcji bezwarunkowej, a CFG
+mnozy jej blad przez (1 − guidance). Po tej samej sciezce szla akumulacja map uwagi. Teraz
+bramka to `manager.lora_enabled` (przebieg uncond zawsze idzie pod `no_lora()`), a manager
+jest przekazywany we wszystkich miejscach instalacji. Audyt na CPU bez SD:
+`scripts/_verify_regional.py` (5 kontroli, przechodzi). **Zaden raportowany wynik nie jest
+tym dotkniety** — `_ground_iou.py --layout regional` nigdy nie dal liczby do REPORT-u,
+a `_verify_unp1.py` instaluje procesor dopiero PO przebiegu uncond. Odblokowuje to wiersz
+„layout bez treningu" do Tabeli 2.
 
 **Uwaga o headlinie.** Sweep chodzi po T=50, a headline to `P_paper` przy T=10. Parametry
 architektury i treningu stosuja sie do obu, wiec zwyciezca **moze wymusic przetrenowanie
@@ -1051,9 +1112,9 @@ wymaga trzech dodatkowych zadan (punkty T=20/30/40, ~3.5 h GPU) — dla warianto
 konce.
 
 **Do zrobienia przed wysylka (sciezka krytyczna to pisanie, nie kolejka):**
-- Kompozycja wielokonceptowa (wyzej).
-- Dwa wiersze porownawcze do Tabeli 2 (podloga „sam prompt", layout bez treningu) — wymagaja
-  najpierw poprawki galezi uncond w `RegionalAttnProcessor`.
+- Kompozycja wielokonceptowa: smoke na GPU, potem obrazy na zwycieskiej recepturze (wyzej).
+- Dwa wiersze porownawcze do Tabeli 2 (podloga „sam prompt", layout bez treningu) — poprawka
+  galezi uncond w `RegionalAttnProcessor` zrobiona 14.09, wiersz jest odblokowany.
 - `figures/tradeoff.pdf` przerobiony na liczby z `P_paper`.
 - Drugie ziarno `P_best` + pelna macierz forgettingu (tabela forgettingu w pracy jest wciaz
   z `erode`).

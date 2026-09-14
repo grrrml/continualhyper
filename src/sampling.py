@@ -172,12 +172,23 @@ def ddim_sample(
     return bundle.decode_latents(latents)
 
 
+def _cxcywh(box):
+    """(x0,y0,x1,y1) od lewego gornego rogu -> (cx,cy,w,h), czyli konwencja `manager.cond_box`.
+    Gesta maska nie ma ramki, wiec zwraca None (grounding dostaje wtedy pelna klatke albo,
+    przy `ground_boxonly`, wylacza sie calkiem)."""
+    if box is None or torch.is_tensor(box):
+        return None
+    x0, y0, x1, y1 = box
+    return ((x0 + x1) / 2.0, (y0 + y1) / 2.0, x1 - x0, y1 - y0)
+
+
 @torch.no_grad()
 def compose_sample_regions(
     bundle, manager, regions, global_hidden, uncond_hidden, global_pooled,
     num_inference_steps: int = 50, guidance_scale: float = 7.5, alpha: float = 0.1,
-    height: int = 512, width: int = 512, generator=None, scheduler=None,
+    height: Optional[int] = None, width: Optional[int] = None, generator=None, scheduler=None,
     regional_steps: Optional[int] = None, bootstrap_steps: int = 0,
+    uncond_pooled: Optional[torch.Tensor] = None, ground: bool = False,
 ):
     """CIDM-style region noise estimation (arXiv 2410.17594 eq. 4-5) with OUR adapters.
 
@@ -190,15 +201,37 @@ def compose_sample_regions(
     `regional_steps` truncates the expensive part: after that many steps only the global pass runs
     (composition is settled early; late steps only refine texture). None = all steps.
 
-    regions: [{'task_idx', 'hidden', 'pooled', 'token_mask', 'box'}]
+    `ground=True`: przebieg regionu dostaje NASZ grounding (GSA) zaadresowany wlasna ramka, czyli
+    to, czego rownania CIDM nie maja -- podmiot formuje sie w ramce, zamiast wysrodkowany.
+    Wymaga checkpointu z `ground_cond` i zainstalowanych `set_grounded`; przy `ground=False`
+    grounding jest JAWNIE czyszczony, bo `_ground_vec` z poprzedniego wywolania przetrwaloby
+    i region dostalby cudza ramke.
+
+    regions: [{'task_idx', 'hidden', 'pooled', 'token_mask', 'box'}], box = (x0,y0,x1,y1) w [0,1]
+    liczone od LEWEGO GORNEGO rogu, albo gesta maska. UWAGA: `manager.cond_box` uzywa innej
+    konwencji, (cx,cy,w,h) -- przeliczenie jest nizej, w jednym miejscu.
     """
-    from .regional import set_regional
     device, dtype = bundle.device, bundle.dtype
+    height = height or bundle.default_resolution
+    width = width or bundle.default_resolution
     scheduler = scheduler if scheduler is not None else bundle.ddim_scheduler
     scheduler.set_timesteps(num_inference_steps, device=device)
     lh, lw = height // 8, width // 8
     latents = torch.randn(1, bundle.latent_channels, lh, lw, generator=generator,
                           device=device, dtype=dtype) * scheduler.init_noise_sigma
+
+    # SDXL: kazdy przebieg UNetu potrzebuje wlasnego mikro-warunkowania. Galaz uncond dostaje
+    # pooled promptu negatywnego, a nie zera -- ta sama poprawka co w ddim_sample (2026-09-07);
+    # bez `uncond_pooled` zostaje stare zachowanie, zeby dalo sie odtworzyc wczesniejsze liczby.
+    # Na SD-1.5 `added_cond` zwraca {}, wiec caly ten blok jest tam no-opem.
+    ac_g = bundle.added_cond(1, height, width, pooled=global_pooled) \
+        if hasattr(bundle, "added_cond") else {}
+    if ac_g:
+        ac_u = bundle.added_cond(1, height, width, pooled=uncond_pooled) if uncond_pooled is not None \
+            else {**ac_g, "text_embeds": torch.zeros_like(ac_g["text_embeds"])}
+        ac_r = [bundle.added_cond(1, height, width, pooled=r["pooled"]) for r in regions]
+    else:
+        ac_u, ac_r = {}, [{} for _ in regions]
 
     def _mask(box):
         m = torch.zeros(lh, lw, device=device, dtype=torch.float32)
@@ -218,23 +251,41 @@ def compose_sample_regions(
         # latent whose OUTSIDE is a noised flat background, so the subject has nowhere to form
         # except inside its box. Plain conditioning cannot do this (measured: a centred subject
         # forms regardless); the paper's eq. 5 needs this trick and does not mention it.
-        flat = torch.full((1, 3, height, width), 0.5, device=device, dtype=dtype)
-        z_bg = bundle.vae.encode(flat * 2 - 1).latent_dist.mean * bundle.vae.config.scaling_factor
+        # VAE SDXL siedzi w fp32, a `dtype` to bf16 -- kodowanie musi isc w dtype VAE,
+        # inaczej wywala sie na niezgodnosci typow przy 1024.
+        flat = torch.full((1, 3, height, width), 0.5, device=device, dtype=bundle.vae.dtype)
+        z_bg = (bundle.vae.encode(flat * 2 - 1).latent_dist.mean
+                * bundle.vae_scale_factor).to(dtype)
     uh = uncond_hidden.to(device=device, dtype=dtype)
     gh = global_hidden.to(device=device, dtype=dtype)
-    n_reg = len(regions) if regional_steps is None else 0
+
+    _MISSING = object()
+    _prev_gain = getattr(manager, "ground_gain", _MISSING)
+    if not ground:
+        manager.set_ground(None)          # patrz docstring: czysci ramke z poprzedniego wywolania
 
     for i, t in enumerate(scheduler.timesteps):
         inp = scheduler.scale_model_input(latents, t)
+        if ground:
+            # harmonogram kappa jak w ddim_sample: grounding zyje tylko przez poczatkowa
+            # frakcje krokow, bo uklad rozstrzyga sie przy wysokim szumie
+            frac = i / max(1, len(scheduler.timesteps))
+            manager.ground_gain = (float(getattr(manager, "ground_gain_base", 1.0))
+                                   if frac < float(getattr(manager, "ground_sched_frac", 1.0))
+                                   else 0.0)
         with manager.no_lora():                                   # unconditional, shared
-            eps_u = bundle.unet(inp, t, encoder_hidden_states=uh).sample
-            eps_g_c = bundle.unet(inp, t, encoder_hidden_states=gh).sample
+            eps_u = bundle.unet(inp, t, encoder_hidden_states=uh,
+                                added_cond_kwargs=ac_u or None).sample
+            eps_g_c = bundle.unet(inp, t, encoder_hidden_states=gh,
+                                  added_cond_kwargs=ac_g or None).sample
         eps_global = eps_u + guidance_scale * (eps_g_c - eps_u)
 
         use_regions = regional_steps is None or i < regional_steps
         if use_regions:
             merged = alpha * eps_global
-            for r, m in zip(regions, masks):
+            for r, m, ac in zip(regions, masks, ac_r):
+                if ground:
+                    manager.set_ground(r["task_idx"], _cxcywh(r["box"]))
                 manager.set_context(r["pooled"].to(device), task_idx=r["task_idx"],
                                     token_mask=r["token_mask"])
                 manager.compute_and_cache_loras()
@@ -247,7 +298,8 @@ def compose_sample_regions(
                     mm = m.to(dtype)
                     inp_r = inp * mm + bg_t * (1 - mm)
                 eps_c = bundle.unet(inp_r, t,
-                                    encoder_hidden_states=r["hidden"].to(device=device, dtype=dtype)).sample
+                                    encoder_hidden_states=r["hidden"].to(device=device, dtype=dtype),
+                                    added_cond_kwargs=ac or None).sample
                 eps_r = eps_u + guidance_scale * (eps_c - eps_u)
                 merged = merged + (1.0 - alpha) * eps_r * m.to(dtype)
             covered = torch.clamp(sum(masks), 0, 1).to(dtype)
@@ -257,6 +309,11 @@ def compose_sample_regions(
             eps = eps_global
         latents = scheduler.step(eps, t, latents).prev_sample
 
-    with manager.no_lora():
-        img = bundle.vae.decode(latents / bundle.vae.config.scaling_factor).sample
-    return (img / 2 + 0.5).clamp(0, 1)
+    if ground:
+        manager.set_ground(None)
+    if _prev_gain is _MISSING:
+        if hasattr(manager, "ground_gain"):
+            del manager.ground_gain
+    else:
+        manager.ground_gain = _prev_gain
+    return bundle.decode_latents(latents)        # dzieli na kawalki: VAE fp32 przy 1024 to ~1 GB/obraz

@@ -110,7 +110,9 @@ Concepts ever composed: V1 dog, V2 duck toy, V3 cat, V4 backpack, V5 teddy bear,
 ### The three internal inconsistencies — do not propagate them
 
 1. **Fig 3 scene 3.2 (bedroom).** The RTP reads `V9 dog | V3 cat | V7 cat` but the region-box labels in the very same panel read V7 **dog** and V9 **cat**. Fig 12's version of the same scene reads `V7 dog | V3 cat | V9 cat`, which agrees with the boxes and with the dataset definition. `[FIGURE]` `[INFERENCE]` the Fig 3 RTP string is wrong.
-2. **Fig 3 scene 3.5 (moon).** Both the RTP and the box label say "V9 dog", but the dataset section says "V1 dog, V2 duck toy, V3 cat, V4 backpack, V5 teddy bear, V7 dog and V9 cat" `[PAPER]` — V9 is a cat. `[INFERENCE]` this is a mislabelled V7 dog. If we reproduce this scene we must pick one reading and say which.
+2. **Fig 3 scene 3.5 (moon).** Both the RTP and the box label say "V9 dog", but the dataset section says "V1 dog, V2 duck toy, V3 cat, V4 backpack, V5 teddy bear, V7 dog and V9 cat" `[PAPER]` — V9 is a cat.
+
+   **RESOLVED 2026-09-14 from the figure itself, no longer an inference.** `[FIGURE]` CIDM's own "Ours" panel for this row renders a **dog** in the right-hand box: a small, smooth-coated corgi in a spacesuit, matching the Task 7 (V7) thumbnail in the same figure, and plainly a different animal from the large fluffy V1 corgi in the middle box. The grey Russian Blue of the Task 9 (V9) thumbnail appears nowhere in the panel. So "V9 dog" is a labelling error for **V7** in both the RTP and the box label, exactly as guessed above. Checked on `multi_concept_SDXL.png` from the arXiv HTML render (2027x2014), saved for comparison under `data/cidm_figs/` — that copy is arXiv-licensed and **not** redistributable, see §6.
 3. **The RTP order is not the left-to-right box order** in scenes 3.2, 3.4, 3.5 and 12.1. Pairing is by colour only. Anyone re-typing these prompts from the figure will get the assignment wrong unless they use the table above.
 
 ## 4. The repository figure
@@ -187,4 +189,4 @@ Drop the final sentence only if we reproduce the image whole and unaltered. Cite
 
 * Decide 2 vs 3 vs 4 concepts per scene for our comparison, and which of the 10 scenes to reproduce. The bedroom (4 concepts, present in both figures) is the hardest and the most informative; the magic castle (2 concepts) is the only scene with two published CIDM renderings and therefore the only place where their own run-to-run variation is visible.
 * Confirm the box-to-concept pairing by eye against `Figs/multi-concept.png` for at least scenes 12.4 and 3.2 (the 4-concept rows). The pairing is geometric and I believe it, but it is the one place where a silent error would flow straight into our figure.
-* Decide the V9-dog / V7-dog question in scene 3.5 if we reproduce that scene.
+* ~~Decide the V9-dog / V7-dog question in scene 3.5~~ — **done 2026-09-14, it is V7**; see inconsistency #2 above. The machine-readable spec is `assets/composition/scenes.json`, which keeps the other two readings reachable with `--scene35 v9|literal` for reproducing the figure as printed.

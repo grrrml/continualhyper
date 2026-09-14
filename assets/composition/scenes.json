@@ -1,0 +1,611 @@
+{
+  "schema": 1,
+  "source_notes": "assets/cidm_composition_notes.md",
+  "paper": "Dong et al., How to Continually Adapt Text-to-Image Diffusion Models for Flexible Customization?, arXiv:2410.17594, NeurIPS 2024",
+  "box_convention": "(x0, y0, x1, y1) normalised to the figure panel frame, origin TOP-LEFT -- the same convention as src.regional._region_vec",
+  "provenance": {
+    "itp_rtp": "transcribed verbatim from the text layer of the arXiv e-print figure PDFs; the spacing quirks and the missing full stop in 12.5 are the authors'",
+    "boxes": "measured from the vector rectangles of the Region Boxes panel, rounded to 3 dp",
+    "pairing": "concept-to-box by rectangle colour and label position, NOT by the order of the RTP string -- the two differ in 3.2, 3.4, 3.5 and 12.1",
+    "region_order": "regions are listed left to right by box x0, i.e. reading order in the figure"
+  },
+  "our_side": {
+    "region_prompt": "the RTP segment with the V<k> label removed and an article prepended, trailing full stop dropped. Nothing else is added -- the scene context some segments carry (walking on the street) is the authors', and segments that carry none stay bare.",
+    "global_prompt": "the ITP verbatim",
+    "class_word": "token span used for the LoRA token mask inside region_prompt"
+  },
+  "concepts": {
+    "V1": {
+      "task": 0,
+      "concept_id": "cifc_dog",
+      "class_word": "dog"
+    },
+    "V2": {
+      "task": 1,
+      "concept_id": "cifc_duck_toy",
+      "class_word": "duck toy"
+    },
+    "V3": {
+      "task": 2,
+      "concept_id": "cifc_cat",
+      "class_word": "cat"
+    },
+    "V4": {
+      "task": 3,
+      "concept_id": "cifc_backpack",
+      "class_word": "backpack"
+    },
+    "V5": {
+      "task": 4,
+      "concept_id": "cifc_teddybear",
+      "class_word": "teddy bear"
+    },
+    "V6": {
+      "task": 5,
+      "concept_id": "cifc_painting",
+      "class_word": "painting",
+      "composed": false
+    },
+    "V7": {
+      "task": 6,
+      "concept_id": "cifc_dog2",
+      "class_word": "dog"
+    },
+    "V8": {
+      "task": 7,
+      "concept_id": "cifc_drawing",
+      "class_word": "drawing",
+      "composed": false
+    },
+    "V9": {
+      "task": 8,
+      "concept_id": "cifc_cat2",
+      "class_word": "cat"
+    },
+    "V10": {
+      "task": 9,
+      "concept_id": "cifc_ink_painting",
+      "class_word": "ink painting",
+      "composed": false
+    }
+  },
+  "scenes": [
+    {
+      "id": "3.1",
+      "figure": 3,
+      "blocked": false,
+      "itp": "anime artwork of a magic castle.",
+      "rtp": "V1 dog | V3 cat wearing wizard hat and wizard cloak, anime style.",
+      "regions": [
+        {
+          "v": "V1",
+          "task": 0,
+          "class_word": "dog",
+          "box": [
+            0.022,
+            0.398,
+            0.441,
+            0.873
+          ],
+          "rtp_segment": "V1 dog",
+          "region_prompt": "a dog"
+        },
+        {
+          "v": "V3",
+          "task": 2,
+          "class_word": "cat",
+          "box": [
+            0.49,
+            0.482,
+            0.984,
+            0.974
+          ],
+          "rtp_segment": "V3 cat wearing wizard hat and wizard cloak, anime style.",
+          "region_prompt": "a cat wearing wizard hat and wizard cloak, anime style"
+        }
+      ],
+      "note": "Same scene as 12.6 but the RTP adds 'and wizard cloak' and the boxes differ. The only scene CIDM renders twice, so the only place their own run-to-run variation is visible."
+    },
+    {
+      "id": "3.2",
+      "figure": 3,
+      "blocked": false,
+      "itp": "a bedroom.",
+      "rtp": "V1 dog sitting on a bed | V9 dog | V3 cat | V7 cat.",
+      "regions": [
+        {
+          "v": "V7",
+          "task": 6,
+          "class_word": "dog",
+          "box": [
+            0.027,
+            0.633,
+            0.305,
+            0.992
+          ],
+          "rtp_segment": "V7 cat.",
+          "region_prompt": "a dog"
+        },
+        {
+          "v": "V1",
+          "task": 0,
+          "class_word": "dog",
+          "box": [
+            0.305,
+            0.205,
+            0.719,
+            0.583
+          ],
+          "rtp_segment": "V1 dog sitting on a bed",
+          "region_prompt": "a dog sitting on a bed"
+        },
+        {
+          "v": "V3",
+          "task": 2,
+          "class_word": "cat",
+          "box": [
+            0.351,
+            0.629,
+            0.64,
+            0.972
+          ],
+          "rtp_segment": "V3 cat",
+          "region_prompt": "a cat"
+        },
+        {
+          "v": "V9",
+          "task": 8,
+          "class_word": "cat",
+          "box": [
+            0.74,
+            0.488,
+            1.0,
+            0.972
+          ],
+          "rtp_segment": "V9 dog",
+          "region_prompt": "a cat"
+        }
+      ],
+      "conflict": "RESOLVED. The RTP prints V9 dog and V7 cat while the box labels in the same panel read V7 dog and V9 cat, and the dataset defines V7 as a dog and V9 as a cat. Figure 12's version of this scene (12.4) reads V7 dog | V9 cat and agrees with both. region_prompt follows the boxes and the dataset; rtp_segment keeps the authors' string."
+    },
+    {
+      "id": "3.3",
+      "figure": 3,
+      "blocked": false,
+      "itp": "a football field with audience background.",
+      "rtp": "V7 dog | V5 teddy bear | V9 cat wearing a medal.",
+      "regions": [
+        {
+          "v": "V7",
+          "task": 6,
+          "class_word": "dog",
+          "box": [
+            0.013,
+            0.488,
+            0.278,
+            0.974
+          ],
+          "rtp_segment": "V7 dog",
+          "region_prompt": "a dog"
+        },
+        {
+          "v": "V5",
+          "task": 4,
+          "class_word": "teddy bear",
+          "box": [
+            0.319,
+            0.488,
+            0.672,
+            0.974
+          ],
+          "rtp_segment": "V5 teddy bear",
+          "region_prompt": "a teddy bear"
+        },
+        {
+          "v": "V9",
+          "task": 8,
+          "class_word": "cat",
+          "box": [
+            0.712,
+            0.488,
+            0.997,
+            0.974
+          ],
+          "rtp_segment": "V9 cat wearing a medal.",
+          "region_prompt": "a cat wearing a medal"
+        }
+      ]
+    },
+    {
+      "id": "3.4",
+      "figure": 3,
+      "blocked": false,
+      "itp": "a resplendent palace.",
+      "rtp": "V1 dog wearing a suit, sitting on a throne | V5 teddy bear | V3 cat.",
+      "regions": [
+        {
+          "v": "V5",
+          "task": 4,
+          "class_word": "teddy bear",
+          "box": [
+            0.038,
+            0.589,
+            0.282,
+            0.996
+          ],
+          "rtp_segment": "V5 teddy bear",
+          "region_prompt": "a teddy bear"
+        },
+        {
+          "v": "V1",
+          "task": 0,
+          "class_word": "dog",
+          "box": [
+            0.3,
+            0.195,
+            0.735,
+            0.996
+          ],
+          "rtp_segment": "V1 dog wearing a suit, sitting on a throne",
+          "region_prompt": "a dog wearing a suit, sitting on a throne"
+        },
+        {
+          "v": "V3",
+          "task": 2,
+          "class_word": "cat",
+          "box": [
+            0.758,
+            0.583,
+            0.977,
+            0.99
+          ],
+          "rtp_segment": "V3 cat.",
+          "region_prompt": "a cat"
+        }
+      ],
+      "note": "Figure 6's second ablation row re-renders these boxes to within 0.010; the authors never say so, do not quote this prompt as Figure 6's."
+    },
+    {
+      "id": "3.5",
+      "figure": 3,
+      "blocked": false,
+      "itp": "the surface of moon in fiction style.",
+      "rtp": "V3 cat | V1 dog | V9 dog walking on the surface of moon.",
+      "regions": [
+        {
+          "v": "V3",
+          "task": 2,
+          "class_word": "cat",
+          "box": [
+            0.018,
+            0.388,
+            0.295,
+            0.87
+          ],
+          "rtp_segment": "V3 cat",
+          "region_prompt": "a cat"
+        },
+        {
+          "v": "V1",
+          "task": 0,
+          "class_word": "dog",
+          "box": [
+            0.328,
+            0.396,
+            0.665,
+            0.878
+          ],
+          "rtp_segment": "V1 dog",
+          "region_prompt": "a dog"
+        },
+        {
+          "v": "V7",
+          "task": 6,
+          "class_word": "dog",
+          "box": [
+            0.698,
+            0.495,
+            0.986,
+            0.878
+          ],
+          "rtp_segment": "V9 dog walking on the surface of moon.",
+          "region_prompt": "a dog walking on the surface of moon",
+          "alternatives": [
+            {
+              "reading": "v7",
+              "v": "V7",
+              "task": 6,
+              "class_word": "dog",
+              "region_prompt": "a dog walking on the surface of moon"
+            },
+            {
+              "reading": "v9",
+              "v": "V9",
+              "task": 8,
+              "class_word": "cat",
+              "region_prompt": "a cat walking on the surface of moon"
+            },
+            {
+              "reading": "literal",
+              "v": "V9",
+              "task": 8,
+              "class_word": "dog",
+              "region_prompt": "a dog walking on the surface of moon"
+            }
+          ]
+        }
+      ],
+      "conflict": "RESOLVED 2026-09-14 BY THE FIGURE ITSELF, not by inference. Both the RTP and the box label read V9 dog while the dataset defines V9 as a cat. CIDM's own Ours panel for this row renders a DOG in the right-hand box -- a small smooth-coated corgi in a spacesuit, matching the Task 7 (V7) thumbnail, and visually distinct from the large fluffy V1 corgi in the middle box. The grey Russian Blue of the Task 9 (V9) thumbnail appears nowhere in the panel. So V9 is a labelling error for V7 in both the RTP and the box label. The 'v9' and 'literal' readings stay in alternatives and are reachable with --scene35, for reproducing the figure as printed."
+    },
+    {
+      "id": "12.1",
+      "figure": 12,
+      "blocked": false,
+      "itp": "a street, Japanese comic style.",
+      "rtp": "V1 dog | V7 dog | V3 cat walking on the street.",
+      "regions": [
+        {
+          "v": "V7",
+          "task": 6,
+          "class_word": "dog",
+          "box": [
+            0.0,
+            0.493,
+            0.263,
+            0.979
+          ],
+          "rtp_segment": "V7 dog",
+          "region_prompt": "a dog"
+        },
+        {
+          "v": "V1",
+          "task": 0,
+          "class_word": "dog",
+          "box": [
+            0.304,
+            0.493,
+            0.656,
+            0.979
+          ],
+          "rtp_segment": "V1 dog",
+          "region_prompt": "a dog"
+        },
+        {
+          "v": "V3",
+          "task": 2,
+          "class_word": "cat",
+          "box": [
+            0.697,
+            0.493,
+            0.996,
+            0.979
+          ],
+          "rtp_segment": "V3 cat walking on the street.",
+          "region_prompt": "a cat walking on the street"
+        }
+      ],
+      "note": "Figure 6's first ablation row re-renders these boxes to within 0.015; the authors never say so."
+    },
+    {
+      "id": "12.2",
+      "figure": 12,
+      "blocked": false,
+      "itp": "a bar,  neon, sleek, ultramodern.",
+      "rtp": "V1 dog | V7 dog drinking a cup of beer.",
+      "regions": [
+        {
+          "v": "V1",
+          "task": 0,
+          "class_word": "dog",
+          "box": [
+            0.018,
+            0.377,
+            0.437,
+            0.852
+          ],
+          "rtp_segment": "V1 dog",
+          "region_prompt": "a dog"
+        },
+        {
+          "v": "V7",
+          "task": 6,
+          "class_word": "dog",
+          "box": [
+            0.494,
+            0.466,
+            0.988,
+            0.958
+          ],
+          "rtp_segment": "V7 dog drinking a cup of beer.",
+          "region_prompt": "a dog drinking a cup of beer"
+        }
+      ],
+      "note": "The double space in the ITP is the authors'."
+    },
+    {
+      "id": "12.3",
+      "figure": 12,
+      "blocked": false,
+      "itp": "a street, anime style.",
+      "rtp": "V1 dog | V5 teddy bear riding a bike on the street.",
+      "regions": [
+        {
+          "v": "V1",
+          "task": 0,
+          "class_word": "dog",
+          "box": [
+            0.018,
+            0.382,
+            0.437,
+            0.857
+          ],
+          "rtp_segment": "V1 dog",
+          "region_prompt": "a dog"
+        },
+        {
+          "v": "V5",
+          "task": 4,
+          "class_word": "teddy bear",
+          "box": [
+            0.494,
+            0.466,
+            0.988,
+            0.957
+          ],
+          "rtp_segment": "V5 teddy bear riding a bike on the street.",
+          "region_prompt": "a teddy bear riding a bike on the street"
+        }
+      ]
+    },
+    {
+      "id": "12.4",
+      "figure": 12,
+      "blocked": false,
+      "itp": "a bedroom.",
+      "rtp": "V1 dog sitting on a bed | V7 dog | V3 cat | V9 cat.",
+      "regions": [
+        {
+          "v": "V7",
+          "task": 6,
+          "class_word": "dog",
+          "box": [
+            0.019,
+            0.616,
+            0.297,
+            0.976
+          ],
+          "rtp_segment": "V7 dog",
+          "region_prompt": "a dog"
+        },
+        {
+          "v": "V1",
+          "task": 0,
+          "class_word": "dog",
+          "box": [
+            0.297,
+            0.188,
+            0.711,
+            0.566
+          ],
+          "rtp_segment": "V1 dog sitting on a bed",
+          "region_prompt": "a dog sitting on a bed"
+        },
+        {
+          "v": "V3",
+          "task": 2,
+          "class_word": "cat",
+          "box": [
+            0.343,
+            0.613,
+            0.632,
+            0.955
+          ],
+          "rtp_segment": "V3 cat",
+          "region_prompt": "a cat"
+        },
+        {
+          "v": "V9",
+          "task": 8,
+          "class_word": "cat",
+          "box": [
+            0.732,
+            0.472,
+            0.992,
+            0.955
+          ],
+          "rtp_segment": "V9 cat.",
+          "region_prompt": "a cat"
+        }
+      ],
+      "note": "Four concepts, two same-class pairs, and the version of the bedroom whose RTP agrees with its own boxes -- the hardest and most informative row."
+    },
+    {
+      "id": "12.5",
+      "figure": 12,
+      "blocked": false,
+      "itp": "grass land with mountain and cloud background.",
+      "rtp": "V4 backpack | V5 teddy bear sitting| V2 duck toy",
+      "regions": [
+        {
+          "v": "V4",
+          "task": 3,
+          "class_word": "backpack",
+          "box": [
+            0.016,
+            0.433,
+            0.346,
+            0.864
+          ],
+          "rtp_segment": "V4 backpack",
+          "region_prompt": "a backpack"
+        },
+        {
+          "v": "V5",
+          "task": 4,
+          "class_word": "teddy bear",
+          "box": [
+            0.393,
+            0.433,
+            0.758,
+            0.864
+          ],
+          "rtp_segment": "V5 teddy bear sitting",
+          "region_prompt": "a teddy bear sitting"
+        },
+        {
+          "v": "V2",
+          "task": 1,
+          "class_word": "duck toy",
+          "box": [
+            0.776,
+            0.58,
+            0.987,
+            0.864
+          ],
+          "rtp_segment": "V2 duck toy",
+          "region_prompt": "a duck toy"
+        }
+      ],
+      "note": "The only objects-only scene (no pets). The missing space before the last pipe and the missing full stop are the authors'."
+    },
+    {
+      "id": "12.6",
+      "figure": 12,
+      "blocked": false,
+      "itp": "anime artwork of a magic castle.",
+      "rtp": "V1 dog | V3 cat wearing wizard hat, anime style.",
+      "regions": [
+        {
+          "v": "V1",
+          "task": 0,
+          "class_word": "dog",
+          "box": [
+            0.018,
+            0.39,
+            0.437,
+            0.865
+          ],
+          "rtp_segment": "V1 dog",
+          "region_prompt": "a dog"
+        },
+        {
+          "v": "V3",
+          "task": 2,
+          "class_word": "cat",
+          "box": [
+            0.494,
+            0.474,
+            0.988,
+            0.966
+          ],
+          "rtp_segment": "V3 cat wearing wizard hat, anime style.",
+          "region_prompt": "a cat wearing wizard hat, anime style"
+        }
+      ],
+      "note": "Same scene as 3.1 with a shorter RTP and different boxes."
+    }
+  ],
+  "omitted": {
+    "figure_6": "Two ablation rows whose boxes match 12.1 and 3.4 to within 0.015, but whose ITP/RTP are printed nowhere. No prompt, no scene -- not reproducible without guessing, so they are not in this file."
+  }
+}
