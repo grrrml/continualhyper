@@ -81,11 +81,17 @@ def main():
     with open(os.path.join(a.root, "score.json"), "w") as f:
         json.dump(out, f, indent=1)
 
+    # W&B nie moze zabic punktu. score.json jest juz na dysku powyzej, wiec awaria logowania
+    # kosztuje wygode, a nie wynik -- a bez tego chwilowy problem z siecia oznaczalby 47 zadan
+    # oznaczonych jako FAILED mimo policzonych liczb.
     if a.wandb:
-        import wandb
-        wandb.init(project="continualhyper-sweep", name=a.wandb, resume="allow")
-        wandb.log(out)
-        wandb.finish()
+        try:
+            import wandb
+            wandb.init(project="continualhyper-sweep", name=a.wandb, resume="allow")
+            wandb.log(out)
+            wandb.finish()
+        except Exception as e:                       # noqa: BLE001
+            print(f"[score] W&B nieudane ({e}) -- wynik jest w score.json", flush=True)
 
 
 if __name__ == "__main__":
