@@ -2,7 +2,7 @@
 
 > Żywy dokument-pamięć projektu: syntetyczny obraz "gdzie jesteśmy i skąd to wiemy".
 > Aktualizowany po każdym domknięciu wątku (werdykt, faza, decyzja ramowa).
-> Szczegółowy dziennik pomiarów i odrzuceń: `assets/STATUS.md`. Stan na: **2026-09-14**.
+> Szczegółowy dziennik pomiarów i odrzuceń: `assets/STATUS.md`. Stan na: **2026-09-14 (wieczor)**.
 
 ---
 
@@ -860,7 +860,7 @@ sekwencyjnych zadań kumuluje drobne różnice. Konsekwencje, wszystkie wsteczne
   Raportować **poziom DINO@T=50**, nie deltę;
 - wcześniejszy wniosek, że β=300 daje „−15% zapominania" (0.0323 wobec 0.0380), **opisywał szum**.
 
-### 5b.3 Warianty metody — dziewięć prób, jedna wygrana
+### 5b.3 Warianty metody — jedenaście prób, dwie wygrane
 
 Wszystko przy zrównanym TA=0.747, te same 10 konceptów CIFC, odczyt interpolowany po skalach
 (`scripts/_curve.py`). Baza = ziarno 2024.
@@ -873,7 +873,9 @@ Wszystko przy zrównanym TA=0.747, te same 10 konceptów CIFC, odczyt interpolow
 | β=300 (czynniki) | 0.6219 | 0.5896 | w granicach szumu |
 | q192h128 (gardło 128, baza 192) | 0.5960 | 0.5511 | gorsze też przy T=10 |
 | kotwica na ΔW, β=100 | 0.6169 | 0.4499 | za słaby więz |
-| kotwica na ΔW, β=500 | 0.6260 | 0.5051 | lepiej, wciąż daleko |
+| kotwica na ΔW, β=500 | 0.6260 | 0.5051 | wciąż za słaby |
+| **kotwica na ΔW, β=2500** | 0.6200 | **0.6106** | **najlepszy wynik**, patrz niżej |
+| kotwica na ΔW, β=10000 | 0.6143 | 0.5909 | za mocny, optimum minięte |
 | era N=10, β=100 | 0.4232 | 0.3823 | adapter zduszony |
 | ema 0.9, β=100 | 0.4912 | 0.4286 | jw. |
 | era β=35 / ema β=40 | 0.525 / 0.578 | 0.362 / 0.429 | poziom wraca, nachylenie się psuje |
@@ -886,15 +888,33 @@ przywraca jakości**: przy s=1.5 (3.3× skali) era daje DINO 0.452 wobec 0.625 b
 kompromisu biegnie **wstecz** — zejście z TA obniża IA. Przy β dobranym pod magnitudę (35/40)
 poziom wraca, ale nachylenie się psuje. Więz bezwzględny jest albo za ciasny, albo za luźny.
 
-**Kotwica na ΔW: argument poprawny, wniosek odwrotny.** Rozkład `dW = x_L @ x_R` nie jest
-jednoznaczny — `(x_L R, R^-1 x_R)` daje tę samą funkcję — więc MSE na czynnikach karze też czystą
-zmianę cechowania. Zweryfikowane liczbowo: reparametryzacja zostawiająca `dW` bez zmian (max
-różnica 9.5e-07) przesuwa `_reg_mse` z 3.974 na 10.658, a `_reg_dw` zostaje na 7.643927 co do
-ostatniej cyfry. Argument z LoRAGen (ICLR 2026, `tsinghua-fib-lab/LoRAGen`). **Ale empirycznie
-kara na czynnikach wygrywa przy każdym β**, i to jest wynik: przypina więcej niż samą funkcję,
-i to nadmiarowe przypięcie kupuje zatrzymanie starych konceptów. Implementacja: `reg.space`,
-domyślnie `factors`; `_reg_dw` liczy odległość bez materializowania `dW` (tożsamość śladu,
-koszt O(r²(in+out)), zgodność z rachunkiem wprost 0.0e+00).
+**Kotwica na dW: argument poprawny, i po skalibrowaniu beta ROWNIEZ empirycznie najlepszy wynik.**
+Rozklad `dW = x_L @ x_R` nie jest jednoznaczny -- `(x_L R, R^-1 x_R)` daje te sama funkcje -- wiec
+MSE na czynnikach karze tez czysta zmiane cechowania. Zweryfikowane liczbowo: reparametryzacja
+zostawiajaca `dW` bez zmian (max roznica 9.5e-07) przesuwa `_reg_mse` z 3.974 na 10.658, a `_reg_dw`
+zostaje na 7.643927 co do ostatniej cyfry. Argument z LoRAGen (ICLR 2026, `tsinghua-fib-lab/LoRAGen`).
+
+Czlon na dW jest przy tej samej wadze **okolo piec razy mniejszy liczbowo** (log zadania 49:
+reg 0.0005 na czynnikach wobec 0.0001 na dW), wiec beta=100 i 500 mierzyly za slaby wiez, a nie zla
+przestrzen. Sweep po beta jest **niemonotoniczny i ma optimum przy 2500**:
+
+| beta (dW) | DINO @T=10 | DINO @T=50 | dDINO |
+|---|---|---|---|
+| 100 | 0.6169 | 0.4499 | −0.167 |
+| 500 | 0.6260 | 0.5051 | −0.121 |
+| **2500** | 0.6200 | **0.6106** | **−0.0094** |
+| 10000 | 0.6143 | 0.5909 | −0.0234 |
+| baza (czynniki, beta=100) | 0.6269 | 0.5890 | −0.0380 |
+
+**0.6106 to najwyzszy `DINO@T=50` ze wszystkiego, co zmierzylismy** — +0.0216 nad baza przy tym
+samym ziarnie, wiecej niz sigma (0.0133), przy zapominaniu czterokrotnie mniejszym i minimalnym
+koszcie plastycznosci. Niemonotonicznosc (10000 gorsze od 2500) znaczy, ze to optimum, a nie
+plateau. **To jest jeden przebieg** — dwa ziarna potwierdzajace sa w kolejce (`22402991/92` plus
+lancuchy koncow). Odczyt T=10 przy beta=2500 byl minimalnie ekstrapolowany (TA siega 0.746 przy
+celu 0.747), dlatego nowym ziarnom dosylamy skale s=0.3.
+
+Implementacja: `reg.space`, domyslnie `factors`; `_reg_dw` liczy odleglosc bez materializowania
+`dW` (tozsamosc sladu, koszt O(r^2(in+out)), zgodnosc z rachunkiem wprost 0.0e+00).
 
 ### 5b.4 Pomiary architektury (bez GPU-godzin, `scripts/_spectrum.py`)
 
@@ -965,67 +985,81 @@ treningu w ogóle. Wczesne wpisy mierzą „ledwo nauczoną sieć", nie „świe
 
 ## 6. W toku / otwarte
 
-**W kolejce (Helios, 2026-09-14):**
-- **Sweep 47 punktów, `outputs/sweep/pNNN`** — tablice `22359606` (23 punkty × 400 kroków, limit
-  6:30, throttle 12) i `22359607` (24 × 800 kroków, limit 12:00, throttle 12). Osiem wymiarów
-  losowanych Latin Hypercube (`scripts/_sweep_points.py`): `reg.space`, `log β` (50–10000),
-  `key_dim` {128,256,512}, `rank` {2,4,8}, `weight_decay` {0,1e-4,1e-3,1e-2}, `steps_per_task`
-  {400,800}, `learn_v`, `scale_cond`. Baza to **niezmieniony `T50_mixed`** (bez `key_renorm`),
-  żeby każdy punkt był porównywalny z liczbami w pracy. Koniec ~25 h od startu.
-- Trzecie ziarno `key_renorm` (`22397640`) — domyka decyzję z 5b.5.
-- Końce krzywej dla `ΔW` przy β=2500 i 10000 (`22397841/42/43/54`) — czy krzywa
-  0.167 → 0.121 → ? dalej schodzi do bazy, czy płaskowacieje.
+**Stan kolejki (Helios, 2026-09-14 wieczor).** Wszystko ma zmniejszone zadanie zasobow do
+**8 rdzeni / 32 GB** (zmierzony szczyt: 7.2 GB trening, 9.3 GB ewaluacja). Stare 32/120 GB bylo
+realna przeszkoda w planowaniu: wezel ma 489 GB, wiec cztery zadania po 120 GB stawaly na styk
+i nie mieszczily sie po cztery na wezel.
 
-**Jak czytać sweep (ustalone zawczasu, żeby nie było doboru po fakcie).** Nie „który punkt wyszedł
-najlepiej" — maksimum z 47 losowań z czystego szumu leży średnio 2.4σ ponad średnią, czyli +0.029
-DINO wyłącznie z przypadku. Decyzja idzie z **efektów głównych**: model liniowy po ośmiu osiach
-dopasowany najmniejszymi kwadratami na wszystkich punktach naraz (przy LHS osie są prawie
-ortogonalne). Przy `σ_total ≈ 0.035` błąd standardowy to `0.29 σ_total ≈ 0.010`, czyli wykrywamy
-efekty od **~0.020**. Działamy tylko na tym, co przekracza 2 SE. Wybór konfiguracji **nigdy nie
-wychodzi wprost ze sweepu** — 3–4 najwyższe punkty idą na dwa dodatkowe ziarna i dopiero sparowane
-porównanie z bazą decyduje. Interakcji przy 48 punktach na 8 osiach nie rozstrzygniemy i tak to
-trzeba raportować.
+- **`22402991/92`** — trening `ΔW` beta=2500 na ziarnach 2025/2026, start szacowany na 15.09
+  07:11 i 08:08, limit sciety do 4:00 (zmierzony przebieg 3:16).
+- **`22408433/35/36/39` + `22408748/54`** — konce krzywej dla tych ziaren, podpiete **`afterok`**
+  do trenigow, wiec ida same. Dodatkowa skala s=0.3 dla T=10, zeby odczyt nie byl ekstrapolowany.
+- **`22408427/28`** — konce trzeciego ziarna `key_renorm`; domykaja decyzje z 5b.5.
+- **`22403877` (23 punkty x 400 krokow, 6:30) i `22403880` (24 x 800, 10:30)** — sweep, throttle
+  12+12, oba `(Priority)`. Szacunek 16.09; dla tablic Slurm liczy go po ostatnim zadaniu, wiec
+  pierwsze punkty wejda wczesniej.
 
-**Do zrobienia przed wysyłką (ścieżka krytyczna to pisanie, nie kolejka):**
-- Kompozycja wielokonceptowa — kodu po naszej stronie **nie ma**, doklejamy się do ich obrazów
-  z pracy. `assets/cidm_composition_notes.md` ma już 11 scen z Figure 3/6, prompty przepisane
-  dosłownie z ich źródła TeX i geometrię ramek odczytaną z wektorów w ich PDF-ach. Potok jest
-  niezależny od checkpointu — budować teraz, generować na zwycięskim później.
-- Dwa wiersze porównawcze do Tabeli 2 (podłoga „sam prompt", layout bez treningu) — wymagają
-  najpierw poprawki gałęzi uncond w `RegionalAttnProcessor`.
-- `figures/tradeoff.pdf` przerobiony na liczby z `P_paper`; krzywa skalowania i krzywe na
-  ustalonych podzbiorach z 5b.1 — zero GPU, dane są.
-- Drugie ziarno `P_best` + pełna macierz forgettingu (tabela forgettingu w pracy jest wciąż
-  z `erode`).
-- Trzecie ziarno SDXL wybranego przepisu — bez tego żadne zdanie o SDXL nie ma wagi.
-- Abstract, Introduction, Related work, Limitations, Conclusion — puste `\todo{}`.
-- Transfer w przód — zmierzony, **ani zdania w tekście**.
+**Sweep przepadl raz i to warto pamietac przy restarcie.** 14.09 tablice ruszyly o 12:09, a
+naprawiony runner dotarl na klaster o 13:51 — w efekcie 24 z 26 punktow mialy
+`output_dir: ./outputs/sweep/config` i 17 rownoleglych zadan nadpisywalo sobie checkpointy
+w jednym katalogu. Anulowane i wyslane od nowa; kosztowalo dzien obliczen i wiek w kolejce
+(~40 h priorytetu). Lekcje w sekcji 7. Katalog `outputs/sweep/config` (pomieszane checkpointy,
+~5 GB) czeka na skasowanie.
+
+**Jak czytac sweep (ustalone zawczasu).** Nie „ktory punkt wyszedl najlepiej" — maksimum z 47
+losowan z czystego szumu lezy srednio 2.4 sigma ponad srednia, czyli +0.029 DINO z przypadku.
+Decyzja z **efektow glownych**: model liniowy po osmiu osiach na wszystkich punktach naraz
+(przy LHS osie sa prawie ortogonalne), SE = 0.29 sigma_total ~ 0.010, dzialamy tylko na tym, co
+przekracza 2 SE (~0.020). Wybor konfiguracji **nigdy wprost z rankingu** — 3-4 najwyzsze punkty
+ida na dwa dodatkowe ziarna i decyduje porownanie sparowane. Analize prowadzic na `dino_t50`,
+a nie na polu `objective`: kara 0.05 za ekstrapolacje byla pomyslana pod optymalizacje bayesowska
+i przy modelu liniowym psulaby estymaty. Punktom z `interp_t50: false` dosylac brakujaca skale
+i przeliczac.
+
+**Nastepny krok: kompozycja wielokonceptowa** (decyzja z 14.09 — robimy ja rownolegle do sweepu).
+Kodu po naszej stronie **nie ma**; doklejamy sie do obrazow z pracy CIDM.
+`assets/cidm_composition_notes.md` ma juz 11 scen z Figure 3 i 6, prompty przepisane doslownie
+z ich zrodla TeX i geometrie ramek odczytana z wektorow w ich PDF-ach (nie z oka).
+**Potok jest niezalezny od checkpointu** — budowac teraz, generowac na zwycieskiej recepturze
+pozniej; zalezne od checkpointu sa tylko same obrazy.
 
 **Uwaga o headlinie.** Sweep chodzi po T=50, a headline to `P_paper` przy T=10. Parametry
-architektury i treningu stosują się do obu, więc zwycięzca sweepu **może wymusić przetrenowanie
-`P_paper`** i powtórzenie porównania z CIDM (~6 h) oraz regenerację kompozycji. Receptura
-wygrywająca przy T=50 nie musi wygrywać przy T=10 — przy dziesięciu konceptach nie ma presji na
-pojemność. Zwycięzcę weryfikować osobno przy T=10, zanim cokolwiek ruszy w headline; jeśli się nie
-potwierdzi, zostają dwie receptury i trzeba to nazwać wprost.
+architektury i treningu stosuja sie do obu, wiec zwyciezca **moze wymusic przetrenowanie
+`P_paper`** (~6 h) i regeneracje kompozycji. Receptura wygrywajaca przy T=50 nie musi wygrywac
+przy T=10 — przy dziesieciu konceptach nie ma presji na pojemnosc. Zwyciezce weryfikowac osobno
+przy T=10, zanim cokolwiek ruszy w headline. To samo dotyczy rysunku skalowania
+(`scripts/_fig_scaling.py`): skrypt jest niezalezny od receptury, ale pelna krzywa dla nowej
+wymaga trzech dodatkowych zadan (punkty T=20/30/40, ~3.5 h GPU) — dla wariantow liczymy tylko
+konce.
 
-**Następna wersja (nie ta):** osobny benchmark skalowania na pełnym CustomConcept101 do T=90
-(92 koncepty po odrzuceniu `scene_*` i duplikatów) — jednorodny strumień usuwa człon składu zbioru
-z 5b.1, ale **wymaga większego `key_dim`**, bo przy T=90 zostaje 55% normy klucza, a przy 128
-dokładnie zero. CC101 nie ma ani jednego konceptu stylu, więc taki benchmark byłby wyłącznie
-obiektowy. Dalej: bramka `g + h(ramka)`; skalowanie gałęzi przez `s_lora`; Option C dwuenkoderowe
-na SDXL; letterbox z bboxem przez korelację wzorca; L2DM na SDXL (OOM); `R_tail` trzecie ziarno
+**Do zrobienia przed wysylka (sciezka krytyczna to pisanie, nie kolejka):**
+- Kompozycja wielokonceptowa (wyzej).
+- Dwa wiersze porownawcze do Tabeli 2 (podloga „sam prompt", layout bez treningu) — wymagaja
+  najpierw poprawki galezi uncond w `RegionalAttnProcessor`.
+- `figures/tradeoff.pdf` przerobiony na liczby z `P_paper`.
+- Drugie ziarno `P_best` + pelna macierz forgettingu (tabela forgettingu w pracy jest wciaz
+  z `erode`).
+- Trzecie ziarno SDXL wybranego przepisu — bez tego zadne zdanie o SDXL nie ma wagi.
+- Abstract, Introduction, Related work, Limitations, Conclusion — puste `\todo{}`.
+- Transfer w przod — zmierzony, **ani zdania w tekscie**.
+
+**Nastepna wersja (nie ta):** osobny benchmark skalowania na pelnym CustomConcept101 do T=90
+(92 koncepty po odrzuceniu `scene_*` i duplikatow) — jednorodny strumien usuwa czlon skladu
+zbioru z 5b.1, ale **wymaga wiekszego `key_dim`**, bo przy T=90 zostaje 55% normy klucza, a przy
+128 dokladnie zero. CC101 nie ma ani jednego konceptu stylu, wiec taki benchmark bylby wylacznie
+obiektowy. Dalej: bramka `g + h(ramka)`; skalowanie galezi przez `s_lora`; Option C dwuenkoderowe
+na SDXL; letterbox z bboxem przez korelacje wzorca; L2DM na SDXL (OOM); `R_tail` trzecie ziarno
 na SD-1.5.
 
-**Nie robić (zmierzone albo rozstrzygnięte):** `share_heads` pod groundingiem (−1.6…−1.9 IA,
-−16 pp placementu); kotwica na gałąź (zamraża transfer w przód);
+**Nie robic (zmierzone albo rozstrzygniete):** `share_heads` pod groundingiem (−1.6…−1.9 IA,
+−16 pp placementu); kotwica na galaz (zamraza transfer w przod);
 `prompt_aug` (−1.40 IA na SDXL); `paste_scale_full_p` (−2.4 IA); `boxonly` (LoRA nie przejmuje
-tożsamości: 53.6/55.0 wobec 62.3); 1600 kroków (nasyca się); tokeny groundingu bez klucza
-(= GLIGEN bez semantyki, claim (ii) upada); rozdzielanie tożsamości od umiejscowienia przez
-wejście gałęzi (wyciek bierze się z sygnału treningowego, nie z wejścia); podnoszenie rangi /
-szerokości głowicy per warstwa; gonienie wypełnienia kadru pod metrykę; **kotwice era i ema przy
-każdym β** (5b.3); **kotwica na ΔW** (5b.3 — argument poprawny, empirycznie przegrywa);
-**poszerzanie `head_hidden`** (5b.3, gorsze także przy T=10); **`basis_q` poniżej zmierzonego
-`basis_L99`** (5b.4).
+tozsamosci: 53.6/55.0 wobec 62.3); 1600 krokow (nasyca sie); tokeny groundingu bez klucza
+(= GLIGEN bez semantyki, claim (ii) upada); rozdzielanie tozsamosci od umiejscowienia przez
+wejscie galezi (wyciek bierze sie z sygnalu treningowego, nie z wejscia); podnoszenie rangi /
+szerokosci glowicy per warstwa; gonienie wypelnienia kadru pod metryke; **kotwice era i ema przy
+kazdym beta** (5b.3); **poszerzanie `head_hidden`** (5b.3, gorsze takze przy T=10);
+**`basis_q` ponizej zmierzonego `basis_L99`** (5b.4).
 
 ## 7. Infrastruktura (twarde lekcje)
 
