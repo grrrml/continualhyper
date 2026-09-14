@@ -219,7 +219,7 @@ class RegionalSelfAttnProcessor:
     """
 
     def __init__(self, boxes, leak: float = 0.0, strength: Optional[float] = None,
-                 manager=None, max_side: int = 0):
+                 manager=None, max_side: int = 0, bg_shared: bool = False):
         """`manager` (opcjonalny): gdy podany, ograniczenie zyje tylko dopoki
         `manager.ground_gain > 0`, czyli dzieli harmonogram z kappa. Bez tego twarda izolacja
         w poznych krokach zjada teksture i spojnosc oswietlenia."""
@@ -229,7 +229,18 @@ class RegionalSelfAttnProcessor:
         rozstrzyga sie na mapach 8/16, a kolor i tekstura na 32/64. Ciecie samo-uwagi na
         mapie 64 tnie teksture, a nie uklad -- i wtedy podmioty owszem sie rozdzielaja, ale
         obraz wychodzi przesycony i pasiasty (zmierzone 2026-09-14, punkt s2_l0)."""
+        """`bg_shared`: czy TLO laczy sie z podmiotami.
+
+        Domyslnie NIE -- i dla JEDNEJ ramki tak ma byc, bo wtedy ciecie podmiot<->tlo jest
+        wlasnie zawieraniem obiektu w ramce (tak uzywa tego `_ground_iou.py`). Przy KOMPOZYCJI
+        ta sama semantyka jest niszczaca: zakazuje 60-68% wszystkich par uwagi zamiast 10-18%,
+        bo kazdy podmiot przestaje widziec scene, a scena jego. Kazda strefa dorabia sobie
+        wtedy wlasna palete i oswietlenie -- zmierzone 2026-09-14: przesycenie, posteryzacja
+        i wyglad wycinanki, tym gorsze, im wiecej ramek. Do kompozycji dawac True: cieta
+        zostaje wtedy WYLACZNIE para region_i <-> region_j, czyli dokladnie to, co sklejalo
+        dwa podmioty w jeden."""
         self.boxes = [b for b in boxes if b is not None]
+        self.bg_shared = bool(bg_shared)
         self.max_side = int(max_side)
         self.leak = float(leak)
         self.strength = strength
@@ -257,8 +268,13 @@ class RegionalSelfAttnProcessor:
             for m in occ:
                 same = torch.maximum(same, torch.outer(m, m))       # ta sama strefa
             covered = torch.stack(occ).amax(0)                       # piksele nalezace do stref
-            free = 1.0 - torch.maximum(covered[:, None], covered[None, :]).clamp(0, 1)
-            allow = torch.maximum(same, free)                        # wolne tlo laczy wszystko
+            # bg_shared: para jest wolna, gdy CHOC JEDEN koniec jest tlem (minimum).
+            # Bez tego wolna jest tylko para tlo-tlo (maximum), czyli podmiot jest odciety
+            # od sceny -- patrz docstring.
+            pair = (torch.minimum if self.bg_shared else torch.maximum)(
+                covered[:, None], covered[None, :])
+            free = 1.0 - pair.clamp(0, 1)
+            allow = torch.maximum(same, free)
             pen = (1.0 - allow) * (1.0 - self.leak)
             bias = (-pen * (1e4 if self.strength is None else float(self.strength))).to(dtype)
         self._cache[key] = bias
@@ -321,7 +337,7 @@ def set_regional(unet, regions, strength=None, collect: bool = False,
 
 
 def set_regional_self(unet, boxes, leak: float = 0.0, strength=None, manager=None,
-                      max_side: int = 0) -> int:
+                      max_side: int = 0, bg_shared: bool = False) -> int:
     """Install regional SELF-attention on attn1; `boxes=None` restores defaults."""
     from diffusers.models.attention_processor import AttnProcessor
     n = 0
@@ -329,7 +345,7 @@ def set_regional_self(unet, boxes, leak: float = 0.0, strength=None, manager=Non
         if name.endswith("attn1") and hasattr(mod, "set_processor"):
             mod.set_processor(AttnProcessor() if not boxes
                               else RegionalSelfAttnProcessor(boxes, leak, strength, manager,
-                                                             max_side))
+                                                             max_side, bg_shared))
             n += 1
     return n
 

@@ -15,7 +15,7 @@ import torch.nn as nn
 
 sys.path.insert(0, ".")
 from src.regional import (RegionalAttnProcessor, RegionKVAttnProcessor,
-                          box_to_cxcywh, reset_attn_acc, ATTN_ACC)
+                          RegionalSelfAttnProcessor, box_to_cxcywh, reset_attn_acc, ATTN_ACC)
 
 
 class StubAttn(nn.Module):
@@ -164,6 +164,19 @@ def main():
     print(f"9) galaz tla    widzi: {sorted(tlo)}  (ma byc bez adaptera, wszystkie 4)")
     print(f"   galaz regionu widzi: {sorted(reg)}  (ma byc {sorted(czte)})")
     ok = ok and tlo == czte and reg == czte
+    # 10) attn1: KTORE pary uwagi sa ciete. Przy `bg_shared=False` wolna jest tylko para
+    #     tlo-tlo, wiec podmiot jest odciety takze od sceny -- to jest semantyka zawierania
+    #     dla JEDNEJ ramki i przy kompozycji zakazuje wiekszosci par. Przy True cieta zostaje
+    #     wylacznie para region_i <-> region_j.
+    B1, B2 = (0.022, 0.398, 0.441, 0.873), (0.490, 0.482, 0.984, 0.974)
+    frac = {}
+    for bg in (False, True):
+        proc = RegionalSelfAttnProcessor([B1, B2], leak=0.0, strength=2.0, bg_shared=bg)
+        b = proc._bias(4096, torch.device("cpu"), torch.float32)
+        frac[bg] = float((b < 0).float().mean())
+    print(f"10) attn1, zakazane pary: bg_shared=False {frac[False]:.1%}, "
+          f"bg_shared=True {frac[True]:.1%}  (ma byc ~60% i ~10%)")
+    ok = ok and frac[False] > 0.5 and frac[True] < 0.2
     print("\n" + ("OK" if ok else "BLAD"))
     return 0 if ok else 1
 

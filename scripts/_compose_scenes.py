@@ -73,6 +73,10 @@ def parse_args():
     ap.add_argument("--boot_grid", default="",
                     help="tryb unp1: wartosci --bootstrap po przecinku, np. '0,4,8'. Szare "
                          "tlo w bootstrapie wychodzi na obrazie, wiec to jest oś do zmiatania")
+    ap.add_argument("--self_bg", type=int, default=1,
+                    help="1 = tlo laczy sie z podmiotami, cieta jest tylko para region-region "
+                         "(do kompozycji). 0 = semantyka zawierania z jedna ramka, ktora tnie "
+                         "takze podmiot<->tlo i zakazuje 60-68%% par uwagi")
     ap.add_argument("--self_sched", type=float, default=0.5,
                     help="frakcja krokow, przez ktore zyje separacja attn1")
     ap.add_argument("--res", type=int, default=0, help="0 = natywna dla backbone'u")
@@ -288,7 +292,7 @@ def main():
                          "lora_scale": a.scale, "bootstrap_steps": boot,
                          "regional_steps": rs, "ground": bool(a.ground),
                          "self_strength": st, "self_leak": lk,
-                         "self_res": sres or None,
+                         "self_res": sres or None, "self_bg_shared": bool(a.self_bg),
                          "self_sched": a.self_sched if st > 0 else None,
                          "scheduler": "DDIM", "negative_prompt": NEG,
                          "seeds": [a.seed0 + i for i in range(a.n)],
@@ -313,7 +317,8 @@ def main():
                                                 generator=g, uncond_pooled=up,
                                                 ground=bool(a.ground), self_strength=st,
                                                 self_leak=lk, self_sched=a.self_sched,
-                                                self_res=sres)
+                                                self_res=sres,
+                                                self_bg_shared=bool(a.self_bg))
                 else:
                     img = compose_sample_regions(bundle, manager, regs, gh, uh, gp,
                                                  num_inference_steps=a.steps,

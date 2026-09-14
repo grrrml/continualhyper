@@ -1122,6 +1122,40 @@ regionom daje ich wlasna projekcje wyjsciowa. Koszt: U+1 mnozen d x d na warstwe
 wobec uwagi, ktora i tak liczy sie U+1 razy. Kontrola 9 w `_verify_regional.py` sprawdza to
 wprost: loguje, ktory adapter byl aktywny przy kazdej z czterech projekcji.
 
+**MASKA `attn1` ODCINALA PODMIOTY OD TLA — znalezione 14.09 po obejrzeniu kolorow.**
+Pierwszy punkt z miekka separacja dal dwa rozdzielone podmioty (czego nie dala zadna inna
+proba), ale obraz byl przesycony, pasiasty i wygladal jak wycinanka. To nie byla kalibracja,
+tylko semantyka maski. W `RegionalSelfAttnProcessor._bias` jest
+`free = 1 - max(covered_i, covered_j)`, czyli para jest wolna tylko wtedy, gdy OBA konce sa
+tlem — mimo komentarza „wolne tlo laczy wszystko". Para podmiot<->tlo byla wiec karana:
+
+| scena | pokrycie ramkami | zakazanych par uwagi | po poprawce (`min` zamiast `max`) |
+|---|---|---|---|
+| 3.1 (2 koncepty) | 45% | **59.8%** | 10.2% |
+| 12.4 (4 koncepty) | 49% | **67.8%** | 17.8% |
+
+Podmiot nie widzial sceny ani scena jego, wiec kazda strefa dorabiala sobie wlasna palete
+i oswietlenie. Stad tez skalowanie szkody z liczba konceptow: wiecej ramek to wieksze
+pokrycie, czyli wiekszy odsetek ciętych par. Przy efektywnej karze 2 scena o dwoch konceptach
+byla brzydka, a o czterech rozpadala sie calkiem.
+
+**To NIE jest zwykly bug — ta semantyka jest poprawna dla JEDNEJ ramki**, bo tam ciecie
+podmiot<->tlo to wlasnie zawieranie obiektu w ramce (tak uzywa jej `_ground_iou.py`).
+Nigdy nie zostala zaadaptowana do kompozycji. Poprawka jest wiec trybem (`bg_shared`),
+domyslnie wlaczonym w torze kompozycji i wylaczonym wszedzie indziej. Kontrola 10
+w `_verify_regional.py` liczy odsetek ciętych par w obu trybach.
+
+**Konsekwencja dla sierpniowego werdyktu** „izolacja attn1 niszczy generacje, samo-uwaga jest
+tym, co skleja obraz": byl mierzony ta sama maska, czyli z podmiotami odcietymi od sceny.
+Do tego szedl ze `strength=None`, wiec byl to dodatkowo przypadek TWARDY. Ten werdykt nie
+mowi zatem nic o miekkiej separacji region-region, ktora jest jedyna wersja, jakiej chcemy.
+
+**`leak` i `strength` to jedno pokretlo.** Punkty `s2_l0` i `s4_l0.5` wyszly BAJTOWO
+identyczne, bo kara to `(1-allow)*(1-leak)*strength` — oba parametry wystepuja wylacznie
+jako iloczyn. Docstring obiecuje, ze `leak` zachowuje globalna spojnosc; zeby to robil,
+musialby byc PODLOGA na uwage miedzyregionowa, a nie przeskalowaniem kary. W siatkach
+zmiatac efektywna sile, nie oba parametry osobno.
+
 **Potok jest niezalezny od checkpointu** — zalezne sa tylko same obrazy. Czego brakuje:
 sklejka rysunku, ktora wymaga decyzji, ktore sceny i skad panele CIDM
 (patrz `assets/composition/README.md`).
