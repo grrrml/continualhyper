@@ -152,6 +152,9 @@ class ContinualHyperManager(nn.Module):
         # moduluje FiLM-em wartosci - hipersiec podaje tresc I dostraja mechanizm czytania.
         self.ground_gsa = bool(tc.get("ground_gsa", False)) and self.ground_cond
         self.ground_gsa_tokens = int(tc.get("ground_gsa_tokens", 4))
+        # `ground_layer_film`: TRESC groundingu rozna na warstwe. Patrz init_ground_gsa.
+        self.ground_layer_film_on = bool(tc.get("ground_layer_film", False))
+        self.ground_layer_film = None
         self.ground_gsa_mods = None
         self.ground_gain_res = None      # {strona mapy attn2 -> mnoznik kappa}, None = 1.0 wszedzie
         self.ground_confine = 0.0        # kara logitu dla tokenow konceptu poza ramka (0 = wylaczona)
@@ -320,6 +323,18 @@ class ContinualHyperManager(nn.Module):
                 "o": nn.Linear(64, d, bias=False),
             })
         self.ground_gsa_mods = nn.ModuleDict(mods)
+        if self.ground_layer_film_on:
+            # Tresc konceptu jest dzis WSPOLNA dla warstw: `_ground_vec` liczy sie raz na
+            # (koncept, ramka), a per warstwa sa wylacznie projekcje odczytu q/k/v/o i bramka.
+            # Kazda warstwa moze wiec wybrac inna podprzestrzen tego samego wektora, ale nie
+            # powie nic, czego w nim nie ma -- a `e` ma M=4 tokeny. CIDM trzyma w tym miejscu
+            # OSOBNY embedding konceptu na warstwe i placi za to skladowaniem rosnacym jak
+            # liczba konceptow RAZY liczba warstw. Tutaj tresc staje sie rozna na warstwe przez
+            # FiLM per warstwa, a koszt to L*2*D parametrow NIEZALEZNIE od liczby konceptow --
+            # czyli dokladnie ta pojemnosc, za ktora bank adapterow placi liniowo.
+            # Zero-init => na starcie e_l == e, czyli zachowanie bitowo identyczne.
+            self.ground_layer_film = nn.ParameterDict(
+                {k: nn.Parameter(torch.zeros(2 * self.ground_tok_dim)) for k in mods})
 
     def geo_inside(self, h: int, w: int, device, dtype) -> torch.Tensor:
         """[n,1] analityczna maska inside(pos, ramka) w [0,1] (adres dla GSA)."""
@@ -354,6 +369,10 @@ class ContinualHyperManager(nn.Module):
             return None
         m = self.ground_gsa_mods[k]
         e = self._ground_vec.to(x.device)                    # [1, M, ground_tok_dim]
+        if self.ground_layer_film is not None and k in self.ground_layer_film:
+            gb_l = self.ground_layer_film[k].to(device=e.device, dtype=e.dtype)
+            d_ = self.ground_tok_dim
+            e = e * (1.0 + gb_l[:d_]) + gb_l[d_:]            # FiLM per WARSTWA na tresci
         gb = self._ground_film_gb.to(x.device)                         # [1, 128]
         gamma, beta = gb[:, :64], gb[:, 64:]
         xf = x.float()
@@ -673,6 +692,8 @@ class ContinualHyperManager(nn.Module):
             params = params + [self.ground_geo_a, self.ground_geo_b]
         if self.ground_gsa_mods is not None:
             params = params + list(self.ground_gsa_mods.parameters()) + list(self.ground_film.parameters())
+            if self.ground_layer_film is not None:
+                params = params + list(self.ground_layer_film.parameters())
         return params + (list(self.ground_gates.parameters()) if self.ground_gates is not None else [])
 
     def task_parameters(self, task_idx: int) -> List[nn.Parameter]:
