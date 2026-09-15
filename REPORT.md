@@ -1218,7 +1218,35 @@ obiektowy. Dalej: bramka `g + h(ramka)`; skalowanie galezi przez `s_lora`; Optio
 na SDXL; letterbox z bboxem przez korelacje wzorca; L2DM na SDXL (OOM); `R_tail` trzecie ziarno
 na SD-1.5.
 
-**Nie robic (zmierzone albo rozstrzygniete):** `share_heads` pod groundingiem (−1.6…−1.9 IA,
+**`task_cond.scale_cond` — ODRZUCONE, i to dwa razy kosztownie (2026-09-15).** Os sweepu
+`scale_cond` (skala LoRA jako WEJSCIE glowicy zamiast mnoznika) rozdziela punkty bez jednego
+wyjatku: `false` daje DINO@T50 w zakresie 0.487-0.588, `true` w 0.254-0.451. Zakresy sie nie
+nakladaja. Efekt glowny to **-0.096 DINO (8 SE)** i **-0.050 TA (8 SE)** — szkodzi na obu osiach
+naraz, przy zadnej wartosci nie wygrywa.
+
+Do tego ta os **psula sam odczyt sweepu**: warunkujac hipersiec na wartosci `s`, model sam
+produkuje adapter „wlasciwy dla tego s", wiec kręcenie `lora_scale` przestaje przesuwac punkt
+pracy i **TA robi sie plaskie w trzeciej cyfrze**. Wszystkie punkty ekstrapolujace przy odczycie
+matched-TA (wspolczynnik do +2250, p016 dostal tak `dino_t50` = 0.808, czyli wiecej niz
+cokolwiek zmierzonego w projekcie) maja `scale_cond: true`; wszystkie interpolujace maja
+`false`. Awaria odczytu byla wiec OBJAWEM tej osi, nie wada celu.
+
+**Koszt: polowa projektu sweepu.** 24 z 48 punktow LHS mialo te flage. Anulowane 15.09:
+13 elementow `sw800` (10 czekajacych, 3 w polowie) i 6 elementow `sw400` w 75-83% ukonczenia —
+razem okolo **119 GPU-godzin**. Zostaly 24 punkty, czyli komplet `scale_cond: false`.
+Paradoksalnie projekt na tym zyskuje: `scale_cond` dawalo najwieksza czesc wariancji reszt
+(sigma 0.039 przy poolingu), wiec przy N=24 i siedmiu osiach SE powinno zejsc do ~0.008,
+ponizej pierwotnie zakladanych 0.010.
+
+**Lekcja procesowa, wazniejsza od samej osi.** Ta flaga miala configi (`phaseS/S_kappa*`,
+`phaseT/T_time_scale`, `_scale_smoke`, wszystkie z 31.08) i smoke na klastrze, ale **ani jednego
+zdania w REPORT ani w STATUS** — sprawdzone, slowo `scale_cond` nie wystepuje w zadnym `.md`
+tego repo. Nie bylo tez na liscie „nie robic". Jesli werdykt kiedykolwiek zapadl, zginal razem
+z sesja. **Kazdy odrzucony wariant ma trafiac na te liste w tym samym commicie, w ktorym
+zapada werdykt** — inaczej wraca, i tym razem wrocil jako polowa osi sweepu.
+
+**Nie robic (zmierzone albo rozstrzygniete):** **`task_cond.scale_cond` (wyzej)**;
+`share_heads` pod groundingiem (−1.6…−1.9 IA,
 −16 pp placementu); kotwica na galaz (zamraza transfer w przod);
 `prompt_aug` (−1.40 IA na SDXL); `paste_scale_full_p` (−2.4 IA); `boxonly` (LoRA nie przejmuje
 tozsamosci: 53.6/55.0 wobec 62.3); 1600 krokow (nasyca sie); tokeny groundingu bez klucza
