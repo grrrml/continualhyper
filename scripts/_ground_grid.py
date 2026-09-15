@@ -25,6 +25,10 @@ _ap.add_argument("--bootstrap", type=int, default=0, help="kroki zajecia zewnetr
 _ap.add_argument("--scaffold_steps", type=int, default=0,
                  help="kroki generacji rusztowania tla z promptu (bez plikow wejsciowych)")
 _ap.add_argument("--n", type=int, default=0, help="probki na (koncept, ramka); 0 = domyslne")
+_ap.add_argument("--steps", type=int, default=30,
+                 help="kroki DDIM generacji glownej. Domyslnie 30 = protokol sond placementu "
+                      "(tab:grounding); 50 = protokol tabel i decyzja z 2026-09-15: wszystko na 50. "
+                      "--bootstrap podawac w KROKACH, wiec przy zmianie steps przeskalowac (30%)")
 _a = _ap.parse_args()
 CKPT = _a.ckpt
 CFGP = _a.config
@@ -84,7 +88,7 @@ for j, c in enumerate(cfg["concepts"]):
         manager.cond_box = box
         for i in range(N):
             g = torch.Generator(device="cuda").manual_seed(31337 + i)
-            img = ddim_sample(bundle, manager, ch, uh, pooled, num_inference_steps=30,
+            img = ddim_sample(bundle, manager, ch, uh, pooled, num_inference_steps=_a.steps,
                               guidance_scale=7.5, generator=g, task_idx=j, token_mask=tm,
                               bootstrap_steps=_a.bootstrap,
                               bootstrap_bg=(_scaffold(prompt, cls, j, i)

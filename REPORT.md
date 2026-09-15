@@ -1085,6 +1085,27 @@ treningu w ogóle. Wczesne wpisy mierzą „ledwo nauczoną sieć", nie „świe
 
 ## 6. W toku / otwarte
 
+### Protokół generacji: WSZYSTKO na 50 krokach — decyzja 2026-09-15
+
+Do tej pory tabele raportowane szły na 50 krokach DDIM, a sondy placementu (`_ground_iou.py`,
+`_ground_grid.py`, cała `tab:grounding`) na 30 — z bootstrapem K=10 z 30 i harmonogramem GSA na
+pierwszych 30%. Decyzja użytkownika: **jeden protokół, 50 kroków, wszędzie**. Konsekwencje:
+
+- bootstrap podajemy jako 30% kroków, czyli **K=15 z 50** (nie 10); harmonogram GSA zostaje 0.3
+  (frakcja, skaluje się sam); rusztowanie zostaje 10-krokowe (to osobna mini-generacja, nie
+  frakcja głównej — założenie, do zweryfikowania wizualnie);
+- `tab:grounding` trzeba **zmierzyć ponownie** przy 50 krokach — liczby z 30 (100% / 0.686 /
+  0.802) nie są przenośne, bo K i harmonogram zmieniają punkt pracy; do czasu pomiaru praca
+  nadal cytuje 30-krokowe;
+- `_ground_grid.py` dostał flagę `--steps` (domyślnie 30, więc stare siatki są odtwarzalne);
+  `_ground_iou.py` miał ją od dawna;
+- zdanie w Setup pracy („30 steps for the placement probes") do zmiany po pomiarze;
+- teaser: siatka placementu ma powstać z `P_paper` przy 50 krokach i K=15, nie z `grid_FINAL`
+  (ten jest z `P_ground_gsa_erode`, poprzednika bez augmentacji).
+
+Pomiar: sonda jak `ch-tab2-main`/`ch-tab2-op` (22223351/22223362) z `--steps 50 --bootstrap 15`.
+
+
 **Stan kolejki (Helios, 2026-09-14 wieczor).** Wszystko ma zmniejszone zadanie zasobow do
 **8 rdzeni / 32 GB** (zmierzony szczyt: 7.2 GB trening, 9.3 GB ewaluacja). Stare 32/120 GB bylo
 realna przeszkoda w planowaniu: wezel ma 489 GB, wiec cztery zadania po 120 GB stawaly na styk
