@@ -963,6 +963,88 @@ kosztowało −0.057, q=128 tylko −0.012.
 +3 M parametrów). Klucz zadania 0 **nie jest** odstępstwem (11.135 wobec 11.326 dla zadania 1),
 więc geometria klucza nie tłumaczy anomalii `dog`.
 
+### 5b.7 Ranga 8 kupuje jakosc za PARYTET PAMIECIOWY (2026-09-15)
+
+Sweep pokazal, ze czolowka ma wspolny mianownik: piec najlepszych punktow ma `hyper.rank = 8`
+(DINO@T50 0.5715-0.6314 wobec bazy 0.5917/0.5708/0.5664 na trzech ziarnach), a retencja
+T=10 -> T=50 poprawia sie z −0.034…−0.040 na −0.009…−0.018.
+
+**Ale ranga wchodzi wprost w stala pamieciowa.** Glowica to `Linear(cond,h) -> SiLU ->
+Linear(h, in*r)`, wiec czlon zalezny od rangi dominuje:
+
+```
+dense:  4.92 M + 51*r*S          S = suma(in+out) po 64 warstwach ~ 79 300
+basis:  4.92 M + q*(S + 6528*r)
+```
+
+| wariant | parametry | prog oplacalnosci vs magazyn CIDM (0.426 M/koncept) |
+|---|---|---|
+| dense r=4 (dzis) | 21.1 M | **~49 konceptow** |
+| dense r=8 | **37.3 M** | ~88 |
+| r=8 + basis q=144 | 23.8 M | ~56 |
+| r=8 + basis q=288 | 42.8 M | ~100 |
+
+Przy T=50 magazyn CIDM wazy 21.3 M. Ranga 4 jest wiec z nim **na styk**, a ranga 8 przegrywa
+pamieciowo **dokladnie w punkcie, ktory demonstrujemy**. Teza asymptotyczna `O(1)` vs `O(T)`
+przezywa przy kazdej randze; psuje sie teza praktyczna, bo prog wychodzi poza pokazywany zakres.
+
+**`basis_q` jako mitygacja: prawdopodobnie nie.** Zapotrzebowanie `basis_L99` przy randze 4
+wynosi 144 przy T=50 (5b.4), ale przy randze 8 kazde zadanie wnosi dwa razy wiecej kolumn
+`x_L`, wiec moze wyjsc ~288 — a przy `q = 246` baza `q*S` zrownuje sie z kosztem dense i
+oszczednosc znika. Do tego zmierzona jakosc `basis_q` jest zla: `T50_q192h128` daje przy T=50
+DINO 0.4970 wobec bazy 0.5501 (−0.053), czyli WIECEJ niz ranga 8 daje na plus, i bylo gorsze
+takze przy T=10, gdzie zapotrzebowanie to ledwie 39. Pomiar `basis_L99` przy randze 8 (zadania
+22427932 dla p001/`factors` i 22428011 dla p029/`dw`) rozstrzyga, czy kombinacja jest w ogole
+mozliwa pamieciowo.
+
+**Rekomendacja robocza: headline zostaje przy randze 4, ranga 8 idzie jako ablacja skalowania.**
+Kosztuje zero (dane na oba warianty juz sa), zdejmuje przetrenowanie `P_paper` ze sciezki
+krytycznej i jest samo w sobie wynikiem: podniesienie rangi kupuje +0.04 DINO i trzykrotnie
+lepsza retencje przy koszcie, ktory NIE ROSNIE z liczba konceptow — gałki, ktorej bank
+adapterow nie ma.
+
+### 5b.8 `head_hidden >= T-1` to warunek architektury, nie hiperparametr (2026-09-15)
+
+Emitowana LoRA to `W2*SiLU(W1*c+b1) + b2`, wiec nieliniowosc stoi PRZED warstwa wyjsciowa
+i obraz lezy w zbiorze afinicznym `b2 + span(kolumny W2)` o wymiarze **co najwyzej `h`**.
+Macierz adapterow wycentrowana po konceptach ma rzad co najwyzej `T-1`. Zeby koncepty nie
+byly ZMUSZONE dzielic kierunkow, potrzeba wiec `h >= T-1`.
+
+Przy T=50 i `h=50` mieszcimy sie o jeden wymiar — i dokladnie to mierzy 5b.4 (`dw99` = 47 z 49,
+gardlo zajete w 94%). **Ograniczenie jest niezalezne od rangi**: granica jest liczba kolumn
+`W2`, nie szerokosc wyjscia. Wniosek praktyczny: `head_hidden` NIE jest dzwignia oszczednosciowa
+przy T=50 — zwezenie do 32 zamknęloby 50 konceptow w 32 wymiarach.
+
+**Luka w planie na T=90.** Sekcja 6 zapowiada benchmark CC101 do T=90 i wymienia jako warunek
+tylko wiekszy `key_dim` (bo przy 128 norma klucza spada do zera przy T=128). Tym samym
+argumentem `head_hidden=50` jest sciana TWARDSZA: przy T=90 trzeba `h >= 89`. Klucz wytrzymuje
+do 128 zadan, gardlo peka juz przy 51. Oba trzeba podniesc razem, nie zamiast siebie.
+
+### 5b.9 Stan odczytu sweepu po usunieciu `scale_cond` (2026-09-15)
+
+Na 12 punktach czystego podzbioru **sigma reszt DINO@T50 wynosi 0.0158**, wobec zakladanych
+0.035. SE spadly do 0.008-0.010, czyli **juz przy 12 punktach mamy dokladnosc, ktora miala
+wymagac 47**. Prog decyzyjny to ~0.018, nie 0.020.
+
+Zaden efekt glowny nie przekracza jeszcze progu, ale kolejnosc jest pouczajaca:
+`reg.weight` **+0.019** (1.9 SE, i TA bez zmian), `hyper.rank` +0.013, `reg.space` (dw) −0.007.
+Czyli **wniosek „ranga 8 wygrywa" pochodzi z rankingu czolowki, a nie z modelu** — a model
+wskazuje raczej sile regularyzacji.
+
+Wspiera to sklad danych: obydwa punkty rangi 4, ktore mamy (p000 beta=176, p036 beta=59), maja
+kotwice `dw` przy beta ponizej 200, czyli praktycznie wylaczona (czlon na `dW` jest ~5x mniejszy
+liczbowo, punkt pracy to 2500). To samo widac w randze 8: p003 (`dw`, beta=151) ma 0.5656,
+najgorszy wynik calej rangi 8. **Nie mamy wiec ANI JEDNEGO punktu rangi 4 z dzialajaca
+regularyzacja** — a czekaja trzy takie: p027 (`factors`, 1460), p031 (`factors`, 5810)
+i p022 (`dw`, 7120, czyli pierwszy `dw` powyzej progu). Dlatego 15.09 wstrzymano czekajace
+punkty rangi 2 i 8, zeby te trzy weszly pierwsze.
+
+**Macierze zapominania przy T=50 NIE SA policzone dla zadnego przebiegu.** Trening zapisuje
+`fresh/`, `forgetting/`, `final/`, ale `cifc_metrics` nigdy na nich nie poszlo; krzywe licza sie
+z `--only_tasks`, wiec raportuja forgetting 0.0. Liczby o retencji powyzej to roznica
+T=10 -> T=50 na tych samych 10 konceptach CIFC, co jest dobra miara utrzymania na strumieniu,
+ale NIE jest peak-final z macierzy 55 komorek i tak trzeba to opisac.
+
 ### 5b.5 `preserve_norm` był no-opem — `key_renorm` jest jego naprawą
 
 `manager.py` liczył `h / ||h|| * ||h||`, czyli dzielił i mnożył przez **tę samą** normę po
