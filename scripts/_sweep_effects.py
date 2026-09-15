@@ -129,7 +129,19 @@ def main():
     ap.add_argument("--root", default="outputs/sweep")
     ap.add_argument("--scale", default="s045", help="wspolna skala odczytu (domyslnie s045)")
     ap.add_argument("--ta", type=float, default=0.747, help="prog TA do wyboru kandydata")
+    ap.add_argument("--fix", default="",
+                    help="np. 'task_cond.scale_cond=false' -- zostawia TYLKO punkty z ta "
+                         "wartoscia i USUWA te os z planu, bo jest wtedy stala. Po odrzuceniu "
+                         "osi (patrz scale_cond) model liczony na calosci jest zanieczyszczony "
+                         "jej wariancja, wiec to nie jest wygoda, tylko warunek poprawnosci")
     a = ap.parse_args()
+
+    axes = list(AXES)
+    fix_path, fix_val = None, None
+    if a.fix:
+        fix_path, _, raw = a.fix.partition("=")
+        fix_val = {"true": True, "false": False}.get(raw.strip().lower(), raw.strip())
+        axes = [(p_, k) for p_, k in axes if p_ != fix_path]
 
     rows = []
     for d in sorted(glob.glob(os.path.join(a.root, "p*"))):
@@ -137,6 +149,12 @@ def main():
         if not os.path.exists(cfgp):
             continue
         cfg = yaml.safe_load(open(cfgp, encoding="utf-8"))
+        if fix_path is not None:
+            v = dig(cfg, fix_path)
+            if v is None and fix_val is False:
+                v = False                      # brak klucza = domyslne false
+            if v != fix_val:
+                continue
         c49 = curve(d, 49)
         at = {s: (ta, ia, di) for s, ta, ia, di in c49}
         rows.append({"name": os.path.basename(d), "cfg": cfg, "c49": c49,
@@ -144,9 +162,9 @@ def main():
 
     used = [r for r in rows if r["pt"] is not None]
     print(f"punktow z config.yaml: {len(rows)} | z odczytem przy {a.scale}: {len(used)}")
-    if len(used) < len(AXES) + 2:
+    if len(used) < len(axes) + 2:
         print("ZA MALO PUNKTOW na model efektow glownych -- potrzeba co najmniej "
-              f"{len(AXES) + 2}, jest {len(used)}. Ponizej tylko ranking kandydatow.")
+              f"{len(axes) + 2}, jest {len(used)}. Ponizej tylko ranking kandydatow.")
 
     # ---- wybor kandydata: max DINO@T50 przy TA >= prog (bez interpolacji, bez selekcji na osiach)
     print(f"\n=== kandydaci: max DINO@T50 przy TA >= {a.ta} (T=50, wszystkie skale punktu)")
@@ -159,19 +177,19 @@ def main():
         print(f"    {n}  skal={k}  {v:.4f}")
     print(f"    dopuszczalnych {len(cand)} z {len(rows)}")
 
-    if len(used) < len(AXES) + 2:
+    if len(used) < len(axes) + 2:
         return
 
     # ---- efekty glowne, dwie odpowiedzi osobno
     cols = []
-    for path, kind in AXES:
+    for path, kind in axes:
         col = [encode(r["cfg"], path, kind) for r in used]
         if any(v is None for v in col):
             raise SystemExit(f"os {path} ma braki w configach")
         m = sum(col) / len(col)
         sd = math.sqrt(sum((v - m) ** 2 for v in col) / len(col)) or 1.0
         cols.append([(v - m) / sd for v in col])       # efekt na 1 odchylenie osi
-    X = [[1.0] + [cols[j][i] for j in range(len(AXES))] for i in range(len(used))]
+    X = [[1.0] + [cols[j][i] for j in range(len(axes))] for i in range(len(used))]
 
     for label, idx in (("DINO@T50", 2), ("TA@T50", 0)):
         y = [r["pt"][idx] for r in used]
@@ -180,7 +198,7 @@ def main():
               f"sigma reszt {sig:.4f})")
         print(f"    {'os':<28}{'efekt':>9}{'SE':>9}   istotne przy 2 SE")
         print(f"    {'(wyraz wolny)':<28}{beta[0]:>9.4f}{se[0]:>9.4f}")
-        for j, (path, _) in enumerate(AXES, start=1):
+        for j, (path, _) in enumerate(axes, start=1):
             flag = "  <<<" if abs(beta[j]) > 2 * se[j] else ""
             print(f"    {path:<28}{beta[j]:>9.4f}{se[j]:>9.4f}{flag}")
 
