@@ -41,6 +41,22 @@ def at_ta(points, ta):
     return a[1] + f * (b[1] - a[1]), a[2] + f * (b[2] - a[2]), False
 
 
+def capped(root, K, ta):
+    """Najlepsze DINO, jakie punkt osiaga NIE SCHODZAC ponizej progu TA.
+
+    Odczyt bez interpolacji, wiec nie da sie nim wyprodukowac wartosci spoza zmierzonego
+    zakresu. `at_ta` dzieli przez roznice TA miedzy skalami, a dla wiekszosci konfiguracji
+    TA jest plaskie w trzeciej cyfrze -- wspolczynnik ekstrapolacji dochodzil do +2250
+    (zmierzone 2026-09-15). Zwraca None, gdy zadna skala nie siega progu: taki punkt jest
+    POZA protokolem porownania i tak trzeba go raportowac, zamiast dawac mu zmyslona liczbe."""
+    best = None
+    for f in sorted(glob.glob(os.path.join(root, f"curveA_t{K}", "s*", "cifc_metrics.json"))):
+        m = cells(f, K)
+        if m and m["clip_t"] >= ta:
+            best = m["dino_i"] if best is None else max(best, m["dino_i"])
+    return best
+
+
 def endpoint(root, K, ta):
     pts = []
     for f in sorted(glob.glob(os.path.join(root, f"curveA_t{K}", "s*", "cifc_metrics.json"))):
@@ -70,6 +86,11 @@ def main():
         if not interp:
             print(f"[score] UWAGA {tag}: TA={a.ta} poza zmierzonym zakresem "
                   f"[{min(tas):.3f}, {max(tas):.3f}] -- ekstrapolacja", flush=True)
+
+    for K, tag in ((9, "t10"), (49, "t50")):
+        c = capped(a.root, K, a.ta)
+        out[f"dino_{tag}_cap"] = c
+        out[f"feasible_{tag}"] = c is not None
 
     out["d_ia"] = out["ia_t50"] - out["ia_t10"]
     out["d_dino"] = out["dino_t50"] - out["dino_t10"]
