@@ -1,15 +1,15 @@
 """ContinualHyperManager: the LoRA-hypernetwork.
 
 Conditioning is the prompt's CLIP **pooler_output** only; per-layer heads map `clip_pooled ->
-(x_L, x_R)` for one cross-attn projection. The LoRA is **timestep-independent** — computed once
-per prompt and applied unchanged at every denoising step — and is applied to every context token.
+(x_L, x_R)` for one cross-attn projection. The LoRA is **timestep-independent** â computed once
+per prompt and applied unchanged at every denoising step â and is applied to every context token.
 
 `compute_and_cache_loras()` runs all heads once and fills a per-layer cache that the injected
 `CachedLoRALinear` reads via `unet.hyper`. This module just maps a pooled prompt -> LoRA.
 
 Optional task conditioning (`task_cond.enabled`): a learnable per-task vector `V_t` modulates
 the pooled prompt (`h_t = V_t * pooled`, Hadamard) and the result is Gram-Schmidt-projected
-against the frozen basis of previous tasks' conditionings — so same-class concepts (whose raw
+against the frozen basis of previous tasks' conditionings â so same-class concepts (whose raw
 pooled embeddings are nearly parallel, cos ~ 0.79) get structurally orthogonal hyper inputs.
 """
 
@@ -54,6 +54,10 @@ class ContinualHyperManager(nn.Module):
         # configow z `preserve_norm: true`, ktorych wyniki powstaly z no-opem.
         self.key_renorm = bool(tc.get("key_renorm", False))
         self.learn_v = bool(tc.get("learn_v", True))    # False -> V_t stays at ones (pure GS)
+        # `gram_schmidt: false` -- ablacja: klucze zostaja takie, jakie sa (losowe przy `key_dim`),
+        # bez rzutowania na dopelnienie wczesniejszych. Baza i tak jest zapisywana, wiec
+        # checkpointy pozostaja wymienne; roznica jest tylko w condition().
+        self.gram_schmidt = bool(tc.get("gram_schmidt", True))
         # `key_dim` replaces the CLIP-pooled key by a random vector of that size. The content of
         # the key is irrelevant (ablated); what matters is that the keys end up orthogonal. Random
         # draws are near-orthogonal already, so Gram-Schmidt removes far less than it does from
@@ -122,7 +126,7 @@ class ContinualHyperManager(nn.Module):
         # 1280 na SDXL (te2.projection_dim). Byla zaszyta jako 768 w init_ground_gsa, co na
         # SDXL wywalalo pierwszy krok z groundingiem na niezgodnosci ksztaltu.
         self.ground_tok_dim = int(clip_dim)
-        # Ga�ki inferencyjne groundingu trzymane jawnie, zeby nie zyly w ukrytych getattr:
+        # Ga³ki inferencyjne groundingu trzymane jawnie, zeby nie zyly w ukrytych getattr:
         self.bs_dilate = 3               # rozszerzenie ramki bootstrapu w komorkach latentu
         if self.ground_cond:
             gin = (int(tc.get("key_dim") or clip_dim)) + 64
@@ -486,7 +490,7 @@ class ContinualHyperManager(nn.Module):
                 mod = mod * self._mod_mask.to(cond.dtype)
             h = h + self.mod_scale * mod
         n_prev = min(int(self.basis_count.item()), int(task_idx))
-        if n_prev > 0:
+        if n_prev > 0 and self.gram_schmidt:
             basis = self.ortho_basis[:n_prev].to(h.dtype)                 # [n, D]
             n0 = h.norm(dim=-1, keepdim=True)          # norma PRZED rzutowaniem
             h = h - (h @ basis.t()) @ basis
@@ -661,7 +665,7 @@ class ContinualHyperManager(nn.Module):
                 for name in self.layer_names}
 
     def lora_from_params(self, clip_pooled: torch.Tensor, params: Dict[str, torch.Tensor]) -> Dict[str, LoraPair]:
-        """Like generate_lora but at OVERRIDDEN head params (functional) — for the Theta+DeltaTheta
+        """Like generate_lora but at OVERRIDDEN head params (functional) â for the Theta+DeltaTheta
         lookahead. `params` keys match self.heads.named_parameters() names."""
         from torch.func import functional_call
         cond = clip_pooled.to(next(self.parameters()).dtype)
