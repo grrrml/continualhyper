@@ -98,6 +98,9 @@ ap.add_argument("--seed0", type=int, default=31337,
 ap.add_argument("--confine_tail", action="store_true",
                 help="kara confine do konca sekwencji (CLIP przyczynowy), nie tylko na spanie")
 ap.add_argument("--out", default="", help="katalog na podglady z ramkami (pusty = nie zapisuj)")
+ap.add_argument("--only_concepts", default="",
+                help="concept_id po przecinku; puste = wszystkie obiektowe. Potrzebne przy configach
+                     "50 konceptow, zeby wiersz tabeli dalej znaczyl siedem obiektow CIFC")
 a = ap.parse_args()
 
 
@@ -327,6 +330,8 @@ for kap, sched, conf in GRID:
     agg = dict.fromkeys(KEYS, 0.0)
     for j, c in enumerate(cfg["concepts"]):
         if c.get("category") == "style":
+            continue
+        if a.only_concepts and c["concept_id"] not in a.only_concepts.split(","):
             continue
         ref = dino.img_feats(sorted(glob.glob(os.path.join(c["images_dir"], "*")))).mean(0, keepdim=True)
         rcol = ref_color(c["concept_id"])
