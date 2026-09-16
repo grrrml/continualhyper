@@ -99,7 +99,7 @@ ap.add_argument("--confine_tail", action="store_true",
                 help="kara confine do konca sekwencji (CLIP przyczynowy), nie tylko na spanie")
 ap.add_argument("--out", default="", help="katalog na podglady z ramkami (pusty = nie zapisuj)")
 ap.add_argument("--only_concepts", default="",
-                help="concept_id po przecinku; puste = wszystkie obiektowe. Potrzebne przy configach
+                help="concept_id po przecinku; puste = wszystkie obiektowe. Potrzebne przy configach "
                      "50 konceptow, zeby wiersz tabeli dalej znaczyl siedem obiektow CIFC")
 a = ap.parse_args()
 
