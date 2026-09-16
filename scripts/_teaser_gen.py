@@ -52,6 +52,12 @@ def main():
                           **cfg.get("hyper", {}))
     load_hyper(manager, a.ckpt, map_location=str(device))
     manager.eval()
+    if getattr(manager, "ground_cond", False):
+        # Bez tego galaz umiejscowienia NIE ISTNIEJE w UNecie, a niesie czesc tozsamosci:
+        # `gen_cifc` instaluje ja zawsze, takze przy generacji bez ramki (pelny kadr, maska = 1).
+        from src.regional import set_grounded
+        set_grounded(bundle.unet, manager)
+        print("[teaser] galaz umiejscowienia zainstalowana (pelny kadr)", flush=True)
     # Bez ramki, ale galaz umiejscowienia zostaje czynna przy pelnym kadrze -- dokladnie tak
     # generuje `gen_cifc`, a galaz niesie czesc tozsamosci (wylaczenie jej kosztuje 8.2 IA
     # i 11.1 DINO). Zerowanie jej dawalo obrazy slabsze niz pasek teasera.
