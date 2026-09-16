@@ -83,7 +83,8 @@ def main():
     state = {"h": None}
 
     def fake_condition(pooled, task_idx=None, use_prompt_mod=True):
-        return state["h"].to(pooled.dtype).expand(pooled.shape[0], -1)
+        # Klucze zostaja w fp32: glowice hipersieci sa fp32, a `pooled` z fp16 backbone jest half.
+        return state["h"].expand(pooled.shape[0], -1)
 
     manager.condition = fake_condition
     cond_hidden, pooled, _ = bundle.encode_text([a.prompt])
