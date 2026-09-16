@@ -7,6 +7,8 @@ nie odwzorowujemy). Warianty:
   aug        -- wlacza `training.augment` (losowy crop 80-100% + flip, jak w naszym przepisie)
   allattn    -- LoRA takze na attn1 (self-attention)
   aug_allattn-- oba
+  ours       -- NASZ pipeline co do joty (crop 80-100% + flip, EnhanceText, tylko attn2):
+                arm kontrolny, w ktorym jedyna roznica wobec naszej metody jest mechanizm CL
   cifc       -- ICH pipeline danych: HumanResizeCropFinalV3 (letterbox + maska straty),
                 EnhanceText na podpisach, LoRA na calej uwadze
 
@@ -24,12 +26,16 @@ ATTN1 = ["attn1.to_q", "attn1.to_k", "attn1.to_v", "attn1.to_out.0"]
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", required=True)
-    ap.add_argument("--variant", required=True, choices=["aug", "allattn", "aug_allattn", "cifc"])
+    ap.add_argument("--variant", required=True, choices=["aug", "allattn", "aug_allattn", "cifc", "ours"])
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
 
     cfg = yaml.safe_load(open(a.base, encoding="utf-8"))
-    if a.variant == "cifc":
+    if a.variant == "ours":
+        tr = cfg.setdefault("training", {})
+        tr["augment"] = True
+        tr["enhance_text"] = True
+    elif a.variant == "cifc":
         tr = cfg.setdefault("training", {})
         tr["augment"] = "cifc"
         tr["enhance_text"] = True
