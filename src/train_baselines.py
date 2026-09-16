@@ -105,7 +105,11 @@ def main():
         cur_tid = token_ids[spec.identifier]
         opt = torch.optim.AdamW([{"params": lora_params, "lr": lr},
                                  {"params": [emb], "lr": tok_lr}], weight_decay=0.0)
-        loader = DataLoader(ConceptDataset(spec, resolution), batch_size=batch_size, shuffle=True,
+        # `training.augment`: ten sam losowy crop/flip co w train_cl. Bez tego baseline'y ucza sie
+        # na nieruszonych zdjeciach, a nasza metoda na augmentowanych -- porownanie nie jest wtedy
+        # o mechanizmie, tylko o danych.
+        loader = DataLoader(ConceptDataset(spec, resolution, augment=bool(train.get("augment", False))),
+                            batch_size=batch_size, shuffle=True,
                             drop_last=True, collate_fn=collate_fn,
                             num_workers=int(train.get("num_workers", 2)))
         data_iter = itertools.cycle(loader)
