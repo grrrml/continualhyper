@@ -37,6 +37,9 @@ def main():
     ap.add_argument("--scales", nargs="+", type=float, default=[0.8])
     ap.add_argument("--n", type=int, default=12, help="obrazow na prompt")
     ap.add_argument("--seed0", type=int, default=7000)
+    ap.add_argument("--ground_gain", type=float, default=None,
+                    help="nadpisuje kappa galezi umiejscowienia; brak = jak w configu, "
+                         "czyli tak jak robi `gen_cifc` (pelna ramka, galaz czynna)")
     ap.add_argument("--steps", type=int, default=50)
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
@@ -49,7 +52,11 @@ def main():
                           **cfg.get("hyper", {}))
     load_hyper(manager, a.ckpt, map_location=str(device))
     manager.eval()
-    manager.ground_gain_base = 0.0          # teaser (b) jest bez ramki
+    # Bez ramki, ale galaz umiejscowienia zostaje czynna przy pelnym kadrze -- dokladnie tak
+    # generuje `gen_cifc`, a galaz niesie czesc tozsamosci (wylaczenie jej kosztuje 8.2 IA
+    # i 11.1 DINO). Zerowanie jej dawalo obrazy slabsze niz pasek teasera.
+    if a.ground_gain is not None:
+        manager.ground_gain_base = a.ground_gain
     manager.cond_box = None
     c = cfg["concepts"][a.task]
     cls = c["class_word"]
