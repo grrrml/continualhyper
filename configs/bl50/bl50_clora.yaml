@@ -1,0 +1,394 @@
+seed: 2024
+resolution: 512
+weight_dtype: fp32
+sd_model_id: stable-diffusion-v1-5/stable-diffusion-v1-5
+output_dir: ./outputs/baseline50/bl50_clora
+hyper:
+  rank: 16
+learned_tokens:
+  enabled: true
+  init_from_class: true
+  lr: 0.001
+target_modules:
+- attn2.to_k
+- attn2.to_v
+concepts:
+- concept_id: cifc_dog
+  images_dir: data/CIFC/datasets/images/dog
+  caption_dir: data/CIFC/datasets/caption/dog
+  class_word: dog
+  category: pet
+  identifier: <V1>
+  prompt: a photo of <V1> dog
+- concept_id: cifc_duck_toy
+  images_dir: data/CIFC/datasets/images/duck_toy
+  caption_dir: data/CIFC/datasets/caption/duck_toy
+  class_word: duck toy
+  category: plushy
+  identifier: <V2>
+  prompt: a photo of <V2> duck toy
+  eval_prefix: yellow rubber
+  attr_strip:
+  - yellow rubber duck toy
+- concept_id: cifc_cat
+  images_dir: data/CIFC/datasets/images/cat
+  caption_dir: data/CIFC/datasets/caption/cat
+  class_word: cat
+  category: pet
+  identifier: <V3>
+  prompt: a photo of <V3> cat
+  attr_strip:
+  - fluffy cat
+- concept_id: cifc_backpack
+  images_dir: data/CIFC/datasets/images/backpack
+  caption_dir: data/CIFC/datasets/caption/backpack
+  class_word: backpack
+  category: plushy
+  identifier: <V4>
+  prompt: a photo of <V4> backpack
+  eval_prefix: red
+  attr_strip:
+  - red backpack
+- concept_id: cifc_teddybear
+  images_dir: data/CIFC/datasets/images/teddybear
+  caption_dir: data/CIFC/datasets/caption/teddybear
+  class_word: teddy bear
+  category: plushy
+  identifier: <V5>
+  prompt: a photo of <V5> teddy bear
+- concept_id: cifc_painting
+  images_dir: data/CIFC/datasets/images/painting
+  caption_dir: data/CIFC/datasets/caption/painting
+  class_word: painting
+  category: style
+  identifier: <V6>
+  prompt: a photo of <V6> painting
+- concept_id: cifc_dog2
+  images_dir: data/CIFC/datasets/images/dog2
+  caption_dir: data/CIFC/datasets/caption/dog2
+  class_word: dog
+  category: pet
+  identifier: <V7>
+  prompt: a photo of <V7> dog
+- concept_id: cifc_drawing
+  images_dir: data/CIFC/datasets/images/drawing
+  caption_dir: data/CIFC/datasets/caption/drawing
+  class_word: drawing
+  category: style
+  identifier: <V8>
+  prompt: a photo of <V8> drawing
+- concept_id: cifc_cat2
+  images_dir: data/CIFC/datasets/images/cat2
+  caption_dir: data/CIFC/datasets/caption/cat2
+  class_word: cat
+  category: pet
+  identifier: <V9>
+  prompt: a photo of <V9> cat
+- concept_id: cifc_ink_painting
+  images_dir: data/CIFC/datasets/images/ink_painting
+  caption_dir: data/CIFC/datasets/caption/ink_painting
+  class_word: ink painting
+  category: style
+  identifier: <V10>
+  prompt: a photo of <V10> ink painting
+- concept_id: cc101_actionfigure_1
+  images_dir: data/benchmark_dataset/actionfigure_1
+  caption_dir: data/cc101_caption/actionfigure_1
+  class_word: action figure
+  category: object
+  identifier: <V11>
+  prompt: a photo of <V11> action figure
+- concept_id: cc101_decoritems_houseplant1
+  images_dir: data/benchmark_dataset/decoritems_houseplant1
+  caption_dir: data/cc101_caption/decoritems_houseplant1
+  class_word: houseplant
+  category: object
+  identifier: <V12>
+  prompt: a photo of <V12> houseplant
+- concept_id: cc101_dish_1
+  images_dir: data/benchmark_dataset/dish_1
+  caption_dir: data/cc101_caption/dish_1
+  class_word: dish
+  category: object
+  identifier: <V13>
+  prompt: a photo of <V13> dish
+- concept_id: cc101_flower_1
+  images_dir: data/benchmark_dataset/flower_1
+  caption_dir: data/cc101_caption/flower_1
+  class_word: flower
+  category: object
+  identifier: <V14>
+  prompt: a photo of <V14> flower
+- concept_id: cc101_furniture_chair1
+  images_dir: data/benchmark_dataset/furniture_chair1
+  caption_dir: data/cc101_caption/furniture_chair1
+  class_word: chair
+  category: object
+  identifier: <V15>
+  prompt: a photo of <V15> chair
+- concept_id: cc101_instrument_1
+  images_dir: data/benchmark_dataset/instrument_1
+  caption_dir: data/cc101_caption/instrument_1
+  class_word: musical instrument
+  category: object
+  identifier: <V16>
+  prompt: a photo of <V16> musical instrument
+- concept_id: cc101_jewelry_earring
+  images_dir: data/benchmark_dataset/jewelry_earring
+  caption_dir: data/cc101_caption/jewelry_earring
+  class_word: earring
+  category: object
+  identifier: <V17>
+  prompt: a photo of <V17> earring
+- concept_id: cc101_luggage_backpack1
+  images_dir: data/benchmark_dataset/luggage_backpack1
+  caption_dir: data/cc101_caption/luggage_backpack1
+  class_word: backpack
+  category: object
+  identifier: <V18>
+  prompt: a photo of <V18> backpack
+- concept_id: cc101_person_1
+  images_dir: data/benchmark_dataset/person_1
+  caption_dir: data/cc101_caption/person_1
+  class_word: person
+  category: pet
+  identifier: <V19>
+  prompt: a photo of <V19> person
+- concept_id: cc101_pet_cat2
+  images_dir: data/benchmark_dataset/pet_cat2
+  caption_dir: data/cc101_caption/pet_cat2
+  class_word: cat
+  category: pet
+  identifier: <V20>
+  prompt: a photo of <V20> cat
+- concept_id: cc101_plushie_2
+  images_dir: data/benchmark_dataset/plushie_2
+  caption_dir: data/cc101_caption/plushie_2
+  class_word: plushie
+  category: object
+  identifier: <V21>
+  prompt: a photo of <V21> plushie
+- concept_id: cc101_things_book
+  images_dir: data/benchmark_dataset/things_book
+  caption_dir: data/cc101_caption/things_book
+  class_word: book
+  category: object
+  identifier: <V22>
+  prompt: a photo of <V22> book
+- concept_id: cc101_toy_bear
+  images_dir: data/benchmark_dataset/toy_bear
+  caption_dir: data/cc101_caption/toy_bear
+  class_word: toy bear
+  category: object
+  identifier: <V23>
+  prompt: a photo of <V23> toy bear
+- concept_id: cc101_transport_bike
+  images_dir: data/benchmark_dataset/transport_bike
+  caption_dir: data/cc101_caption/transport_bike
+  class_word: bike
+  category: object
+  identifier: <V24>
+  prompt: a photo of <V24> bike
+- concept_id: cc101_wearable_glasses
+  images_dir: data/benchmark_dataset/wearable_glasses
+  caption_dir: data/cc101_caption/wearable_glasses
+  class_word: glasses
+  category: object
+  identifier: <V25>
+  prompt: a photo of <V25> glasses
+- concept_id: cc101_actionfigure_2
+  images_dir: data/benchmark_dataset/actionfigure_2
+  caption_dir: data/cc101_caption/actionfigure_2
+  class_word: action figure
+  category: object
+  identifier: <V26>
+  prompt: a photo of <V26> action figure
+- concept_id: cc101_decoritems_houseplant2
+  images_dir: data/benchmark_dataset/decoritems_houseplant2
+  caption_dir: data/cc101_caption/decoritems_houseplant2
+  class_word: houseplant
+  category: object
+  identifier: <V27>
+  prompt: a photo of <V27> houseplant
+- concept_id: cc101_dish_2
+  images_dir: data/benchmark_dataset/dish_2
+  caption_dir: data/cc101_caption/dish_2
+  class_word: dish
+  category: object
+  identifier: <V28>
+  prompt: a photo of <V28> dish
+- concept_id: cc101_flower_2
+  images_dir: data/benchmark_dataset/flower_2
+  caption_dir: data/cc101_caption/flower_2
+  class_word: flower
+  category: object
+  identifier: <V29>
+  prompt: a photo of <V29> flower
+- concept_id: cc101_furniture_chair2
+  images_dir: data/benchmark_dataset/furniture_chair2
+  caption_dir: data/cc101_caption/furniture_chair2
+  class_word: chair
+  category: object
+  identifier: <V30>
+  prompt: a photo of <V30> chair
+- concept_id: cc101_instrument_music1
+  images_dir: data/benchmark_dataset/instrument_music1
+  caption_dir: data/cc101_caption/instrument_music1
+  class_word: musical instrument
+  category: object
+  identifier: <V31>
+  prompt: a photo of <V31> musical instrument
+- concept_id: cc101_jewelry_ring
+  images_dir: data/benchmark_dataset/jewelry_ring
+  caption_dir: data/cc101_caption/jewelry_ring
+  class_word: ring
+  category: object
+  identifier: <V32>
+  prompt: a photo of <V32> ring
+- concept_id: cc101_luggage_purse1
+  images_dir: data/benchmark_dataset/luggage_purse1
+  caption_dir: data/cc101_caption/luggage_purse1
+  class_word: purse
+  category: object
+  identifier: <V33>
+  prompt: a photo of <V33> purse
+- concept_id: cc101_person_2
+  images_dir: data/benchmark_dataset/person_2
+  caption_dir: data/cc101_caption/person_2
+  class_word: person
+  category: pet
+  identifier: <V34>
+  prompt: a photo of <V34> person
+- concept_id: cc101_pet_cat3
+  images_dir: data/benchmark_dataset/pet_cat3
+  caption_dir: data/cc101_caption/pet_cat3
+  class_word: cat
+  category: pet
+  identifier: <V35>
+  prompt: a photo of <V35> cat
+- concept_id: cc101_plushie_bunny
+  images_dir: data/benchmark_dataset/plushie_bunny
+  caption_dir: data/cc101_caption/plushie_bunny
+  class_word: bunny plushie
+  category: object
+  identifier: <V36>
+  prompt: a photo of <V36> bunny plushie
+- concept_id: cc101_things_book2
+  images_dir: data/benchmark_dataset/things_book2
+  caption_dir: data/cc101_caption/things_book2
+  class_word: book
+  category: object
+  identifier: <V37>
+  prompt: a photo of <V37> book
+- concept_id: cc101_toy_gnome
+  images_dir: data/benchmark_dataset/toy_gnome
+  caption_dir: data/cc101_caption/toy_gnome
+  class_word: toy gnome
+  category: object
+  identifier: <V38>
+  prompt: a photo of <V38> toy gnome
+- concept_id: cc101_transport_car1
+  images_dir: data/benchmark_dataset/transport_car1
+  caption_dir: data/cc101_caption/transport_car1
+  class_word: car
+  category: object
+  identifier: <V39>
+  prompt: a photo of <V39> car
+- concept_id: cc101_wearable_jacket1
+  images_dir: data/benchmark_dataset/wearable_jacket1
+  caption_dir: data/cc101_caption/wearable_jacket1
+  class_word: jacket
+  category: object
+  identifier: <V40>
+  prompt: a photo of <V40> jacket
+- concept_id: cc101_actionfigure_3
+  images_dir: data/benchmark_dataset/actionfigure_3
+  caption_dir: data/cc101_caption/actionfigure_3
+  class_word: action figure
+  category: object
+  identifier: <V41>
+  prompt: a photo of <V41> action figure
+- concept_id: cc101_decoritems_houseplant3
+  images_dir: data/benchmark_dataset/decoritems_houseplant3
+  caption_dir: data/cc101_caption/decoritems_houseplant3
+  class_word: houseplant
+  category: object
+  identifier: <V42>
+  prompt: a photo of <V42> houseplant
+- concept_id: cc101_furniture_chair3
+  images_dir: data/benchmark_dataset/furniture_chair3
+  caption_dir: data/cc101_caption/furniture_chair3
+  class_word: chair
+  category: object
+  identifier: <V43>
+  prompt: a photo of <V43> chair
+- concept_id: cc101_instrument_music2
+  images_dir: data/benchmark_dataset/instrument_music2
+  caption_dir: data/cc101_caption/instrument_music2
+  class_word: musical instrument
+  category: object
+  identifier: <V44>
+  prompt: a photo of <V44> musical instrument
+- concept_id: cc101_luggage_purse2
+  images_dir: data/benchmark_dataset/luggage_purse2
+  caption_dir: data/cc101_caption/luggage_purse2
+  class_word: purse
+  category: object
+  identifier: <V45>
+  prompt: a photo of <V45> purse
+- concept_id: cc101_person_3
+  images_dir: data/benchmark_dataset/person_3
+  caption_dir: data/cc101_caption/person_3
+  class_word: person
+  category: pet
+  identifier: <V46>
+  prompt: a photo of <V46> person
+- concept_id: cc101_pet_cat4
+  images_dir: data/benchmark_dataset/pet_cat4
+  caption_dir: data/cc101_caption/pet_cat4
+  class_word: cat
+  category: pet
+  identifier: <V47>
+  prompt: a photo of <V47> cat
+- concept_id: cc101_plushie_cow
+  images_dir: data/benchmark_dataset/plushie_cow
+  caption_dir: data/cc101_caption/plushie_cow
+  class_word: cow plushie
+  category: object
+  identifier: <V48>
+  prompt: a photo of <V48> cow plushie
+- concept_id: cc101_things_bottle1
+  images_dir: data/benchmark_dataset/things_bottle1
+  caption_dir: data/cc101_caption/things_bottle1
+  class_word: bottle
+  category: object
+  identifier: <V49>
+  prompt: a photo of <V49> bottle
+- concept_id: cc101_toy_pikachu1
+  images_dir: data/benchmark_dataset/toy_pikachu1
+  caption_dir: data/cc101_caption/toy_pikachu1
+  class_word: toy figure
+  category: object
+  identifier: <V50>
+  prompt: a photo of <V50> toy figure
+training:
+  steps_per_task: 800
+  batch_size: 2
+  lr: 0.0001
+  weight_decay: 0.0
+  grad_clip: 1.0
+  log_every: 200
+  num_workers: 2
+  diagnostic_freq: 0
+infer:
+  steps: 50
+  guidance_scale: 7.5
+  n_images: 1
+wandb:
+  enabled: true
+  project: ContinualHyper
+  name: bl50_clora
+baseline:
+  method: clora
+  lam: 1.0
+  fisher_batches: 200
