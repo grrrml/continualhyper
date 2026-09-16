@@ -110,7 +110,7 @@ class ConceptSpec:
         return self.prompt or f"a photo of {self.replacement}"
 
 
-def _load_image(path: str, resolution: int, augment: bool = False):
+def _load_image(path: str, resolution: int, augment=False):
     """-> (tensor [-1,1] [3,H,W], (orig_h, orig_w), (crop_top, crop_left)).
 
     Rozmiar zrodla i offset cropu sa mikro-warunkowaniem SDXL (`time_ids`): model uczyl sie,
@@ -122,6 +122,34 @@ def _load_image(path: str, resolution: int, augment: bool = False):
     """
     img = Image.open(path).convert("RGB")
     w, h = img.size
+    if augment == "cifc":
+        # HumanResizeCropFinalV3 z `lib/data/pil_transform.py` benchmarku: krotszy bok do
+        # `resolution`, z p=0.5 losowy kwadratowy crop, potem dluzszy bok do `resolution`
+        # i wklejenie w losowe miejsce czarnego plotna. `img_mask` mowi, gdzie sa realne
+        # piksele; strata liczy sie tylko tam (u nich przez `img_mask` w trenerze).
+        sc = resolution / min(w, h)
+        img = img.resize((max(1, round(w * sc)), max(1, round(h * sc))), Image.BICUBIC)
+        w, h = img.size
+        if random.random() < 0.5:
+            if h > w:
+                crop_pos = random.randint(0, h - w)
+                img = img.crop((0, 0, w, min(h, w + crop_pos)))
+            else:
+                x0 = random.randint(0, w - h)
+                img = img.crop((x0, 0, x0 + h, h))
+            w, h = img.size
+        sc = min((resolution - 1) / max(w, h), 1.0) if max(w, h) > resolution else 1.0
+        if sc < 1.0:
+            img = img.resize((max(1, round(w * sc)), max(1, round(h * sc))), Image.BICUBIC)
+            w, h = img.size
+        canvas = Image.new("RGB", (resolution, resolution), (0, 0, 0))
+        x0 = random.randint(0, resolution - w)
+        y0 = random.randint(0, resolution - h)
+        canvas.paste(img, (x0, y0))
+        mask = np.zeros((resolution, resolution), dtype=np.float32)
+        mask[y0:y0 + h, x0:x0 + w] = 1.0
+        arr = torch.from_numpy(np.asarray(canvas, dtype=np.float32) / 255.0).permute(2, 0, 1)
+        return arr * 2.0 - 1.0, (h, w), (0, 0), torch.from_numpy(mask)
     if augment:
         # anti-scene-overfit augmentation: random square crop (80-100% of the short side,
         # random position) + random horizontal flip; identity survives, exact scene layout doesn't
@@ -138,7 +166,7 @@ def _load_image(path: str, resolution: int, augment: bool = False):
     img = img.resize((resolution, resolution), Image.BICUBIC)
     arr = torch.from_numpy(np.asarray(img, dtype=np.float32) / 255.0).permute(2, 0, 1)
     crop = (int(round(y0 * resolution / s)), int(round(x0 * resolution / s)))
-    return arr * 2.0 - 1.0, (h, w), crop  # [-1,1], [3,H,W]
+    return arr * 2.0 - 1.0, (h, w), crop, None  # [-1,1], [3,H,W], maska tylko dla trybu "cifc"
 
 
 class ConceptDataset(Dataset):
@@ -174,8 +202,8 @@ class ConceptDataset(Dataset):
     def __getitem__(self, idx: int) -> dict:
         path = self.paths[idx % len(self.paths)]
         stem = os.path.splitext(os.path.basename(path))[0]
-        px, orig, crop = _load_image(path, self.resolution, self.augment)
-        return {"pixel_values": px, "caption": self._caption(stem),
+        px, orig, crop, img_mask = _load_image(path, self.resolution, self.augment)
+        return {"pixel_values": px, "caption": self._caption(stem), "img_mask": img_mask,
                 "orig_size": torch.tensor(orig), "crop": torch.tensor(crop)}
 
 
@@ -183,6 +211,8 @@ def collate_fn(batch: List[dict]) -> dict:
     return {
         "pixel_values": torch.stack([b["pixel_values"] for b in batch], 0),
         "captions": [b["caption"] for b in batch],
+        "img_masks": (torch.stack([b["img_mask"] for b in batch])
+                      if batch[0].get("img_mask") is not None else None),
         "orig_size": torch.stack([b["orig_size"] for b in batch], 0),   # [B,2] (h,w) zrodla
         "crop": torch.stack([b["crop"] for b in batch], 0),             # [B,2] (top,left)
     }

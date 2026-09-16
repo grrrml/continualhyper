@@ -20,7 +20,7 @@ from torch.utils.data import DataLoader
 from .baselines import (StaticLoRABank, clone_bank, clora_penalty, diagonal_fisher, ewc_penalty,
                         lwf_distill, snapshot)
 from .common import load_config, set_seed
-from .data import ConceptDataset, collate_fn, specs_from_config
+from .data import ConceptDataset, collate_fn, specs_from_config, enhance
 from .injection import DEFAULT_TARGETS, inject_lora
 from .losses import reconstruction_loss
 from .sd_loader import load_sd
@@ -108,7 +108,7 @@ def main():
         # `training.augment`: ten sam losowy crop/flip co w train_cl. Bez tego baseline'y ucza sie
         # na nieruszonych zdjeciach, a nasza metoda na augmentowanych -- porownanie nie jest wtedy
         # o mechanizmie, tylko o danych.
-        loader = DataLoader(ConceptDataset(spec, resolution, augment=bool(train.get("augment", False))),
+        loader = DataLoader(ConceptDataset(spec, resolution, augment=train.get("augment", False)),
                             batch_size=batch_size, shuffle=True,
                             drop_last=True, collate_fn=collate_fn,
                             num_workers=int(train.get("num_workers", 2)))
@@ -117,7 +117,10 @@ def main():
         def task_loss():
             batch = next(data_iter)
             images = batch["pixel_values"].to(device)
-            cond, pooled, _ = bundle.encode_text(batch["captions"], train_tokens=True)
+            caps = batch["captions"]
+            if train.get("enhance_text"):
+                caps = [enhance(c) for c in caps]          # EnhanceText(enhance_type="object")
+            cond, pooled, _ = bundle.encode_text(caps, train_tokens=True)
             z0 = bundle.encode_images(images)
             noise = torch.randn_like(z0)
             t = torch.randint(0, bundle.num_train_timesteps, (z0.shape[0],), device=device)
@@ -125,7 +128,16 @@ def main():
             ac = (bundle.added_cond(z_t.shape[0], resolution, resolution, pooled=pooled)
                   if getattr(bundle, "is_sdxl", False) else None)
             eps = unet(z_t, t, encoder_hidden_states=cond, added_cond_kwargs=ac).sample
-            return reconstruction_loss(eps.float(), noise.float()), (z_t, t, noise, ac)
+            im = batch.get("img_masks")
+            if im is not None:
+                # strata tylko na realnych pikselach letterboxa, jak `img_mask` u nich
+                lm = torch.nn.functional.interpolate(im.to(device).unsqueeze(1),
+                                                     size=z0.shape[-2:], mode="nearest")
+                d = (eps.float() - noise.float()) ** 2 * lm
+                loss_val = d.sum() / lm.expand_as(d).sum().clamp(min=1.0)
+            else:
+                loss_val = reconstruction_loss(eps.float(), noise.float())
+            return loss_val, (z_t, t, noise, ac)
 
         for step in range(steps_per_task):
             loss, (z_t, t, _, ac) = task_loss()
