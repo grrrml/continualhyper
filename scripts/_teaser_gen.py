@@ -74,6 +74,10 @@ def main():
                     img = ddim_sample(bundle, manager, ch, uncond_hidden, pooled,
                                       num_inference_steps=a.steps, guidance_scale=7.5,
                                       batch_size=1, generator=g, task_idx=a.task,
+                                      scheduler=bundle.dpm_scheduler,   # jak `gen_cifc`: DPM++,
+                                      # nie DDIM. Przy tym samym checkpointie i skali DDIM dawal
+                                      # inne obrazy (manekin bez sukienki przy zadaniu 40), wiec
+                                      # teaser musi isc tym samym samplerem co ewaluacja.
                                       token_mask=tm, uncond_pooled=uncond_pooled)[0]
                 arr = (img.permute(1, 2, 0).clamp(0, 1) * 255).byte().cpu().numpy()
                 Image.fromarray(arr).save(os.path.join(d, f"{i:02d}.jpg"), quality=92)
