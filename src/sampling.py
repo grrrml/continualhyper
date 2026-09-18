@@ -249,7 +249,13 @@ def compose_sample_regions(
         m = torch.nn.functional.conv2d(m, k.view(1, 1, -1, 1), padding=(rad, 0))
         return m
 
-    masks = [_feather(_mask(r["box"]), feather) for r in regions]
+    # DWA komplety masek, i to jest istotne. Wygladzona sluzy WYLACZNIE do scalania
+    # predykcji; bootstrap musi dostac maske TWARDA. Przy miekkiej `inp_r = inp*m +
+    # bg_t*(1-m)` daje w strefie przejscia pol prawdziwego latentu i pol swiezego szumu,
+    # co nie jest poprawnym x_t dla zadnego t -- UNet zwraca tam smieci i widac to jako
+    # zaszumiona ramke dokladnie w strefie wygladzenia (zmierzone, feather 2 i 4).
+    hard_masks = [_mask(r["box"]) for r in regions]
+    masks = [_feather(m, feather) for m in hard_masks]
     # MultiDiffusion-style bootstrapping: for the first K steps each region pass sees a latent
     # whose OUTSIDE carries no information, so the subject has nowhere to form except inside its
     # box. Plain conditioning cannot do this (measured: a centred subject forms regardless);
@@ -295,7 +301,7 @@ def compose_sample_regions(
             # przenikania usrednia zamiast sumowac
             wnorm = torch.clamp(wsum, min=1.0)
             merged = alpha * eps_global
-            for ri, (r, m, ac) in enumerate(zip(regions, masks, ac_r)):
+            for ri, (r, m, mh, ac) in enumerate(zip(regions, masks, hard_masks, ac_r)):
                 if ground:
                     manager.set_ground(r["task_idx"], box_to_cxcywh(r["box"]))
                 manager.set_context(r["pooled"].to(device), task_idx=r["task_idx"],
@@ -308,7 +314,7 @@ def compose_sample_regions(
                                         dtype=dtype)
                     bg_t = scheduler.add_noise(zero, noise, t.reshape(1))
                     bg_t = scheduler.scale_model_input(bg_t, t)
-                    mm = m.to(dtype)
+                    mm = mh.to(dtype)          # TWARDA maska, patrz komentarz przy hard_masks
                     inp_r = inp * mm + bg_t * (1 - mm)
                 eps_c = bundle.unet(inp_r, t,
                                     encoder_hidden_states=r["hidden"].to(device=device, dtype=dtype),
