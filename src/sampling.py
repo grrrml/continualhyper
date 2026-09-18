@@ -260,7 +260,10 @@ def compose_sample_regions(
         # VAE przy 1024^2 jest drogie, a w petli tylko wybieramy z palety.
         for _ in range(_BOOT_PALETTE):
             col = torch.rand(1, 3, 1, 1, generator=generator, device=device)
-            flat = col.expand(1, 3, height, width).to(bundle.vae.dtype)
+            # .contiguous() nie jest ozdoba: expand daje widok o kroku 0, a .to() przy tym
+            # samym dtype (SD-1.5 ma VAE w fp32, jak col) zwraca TEN SAM obiekt, wiec bez tego
+            # do vae.encode szedlby tensor o zerowych krokach
+            flat = col.expand(1, 3, height, width).to(bundle.vae.dtype).contiguous()
             z_bgs.append((bundle.vae.encode(flat * 2 - 1).latent_dist.mean
                           * bundle.vae_scale_factor).to(dtype))
     uh = uncond_hidden.to(device=device, dtype=dtype)
