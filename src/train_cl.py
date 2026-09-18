@@ -128,6 +128,11 @@ def parse_args():
     p.add_argument("--config", required=True)
     p.add_argument("--output_dir", default=None)
     p.add_argument("--reg_weight", type=float, default=None, help="override reg.weight (von-Oswald beta)")
+    p.add_argument("--init_ckpt", default=None,
+                   help="checkpoint, od ktorego wznawiamy (np. ckpts/hyper_after_task09.pt)")
+    p.add_argument("--start_task", type=int, default=0,
+                   help="pierwsze zadanie do policzenia; wczesniejsze sa pomijane. "
+                        "Wymaga --init_ckpt, ktory zawiera stan po zadaniu start_task-1")
     return p.parse_args()
 
 
@@ -323,7 +328,29 @@ def main():
     anchor_ref = None   # JEDNA kopia glowic (era/ema); None w trybie rolling
     gstep = 0
     _clip_img = None                      # lazy: only built when sem_dim is on
+
+    if args.start_task > 0:
+        if not args.init_ckpt:
+            raise SystemExit("--start_task wymaga --init_ckpt")
+        from .common import load_hyper
+        load_hyper(manager, args.init_ckpt, map_location=str(device))
+        got = int(manager.basis_count.item()) if hasattr(manager, "basis_count") else -1
+        if got != args.start_task:
+            raise SystemExit(f"checkpoint ma basis_count={got}, a --start_task={args.start_task}"
+                             f" -- to nie jest stan po zadaniu {args.start_task - 1}")
+        # Kotwice regularyzatora NIE sa w checkpointcie (powstaja w petli nizej), wiec
+        # odtwarzamy je tak samo, jak zrobilaby to petla: warunkowanie kanoniczne kazdego
+        # wczesniejszego zadania. Bez tego regularyzator nie chronilby zadan 0..start_task-1.
+        with torch.no_grad():
+            for j in range(args.start_task):
+                _, pooled_j, _ = bundle.encode_text([specs[j].diag_prompt])
+                anchor_conds.append(manager.condition(pooled_j, j)[0].detach())
+        print(f"[CL] wznowione z {args.init_ckpt}: basis_count={got}, "
+              f"kotwic={len(anchor_conds)}, start od zadania {args.start_task}", flush=True)
+
     for k, spec in enumerate(specs):
+        if k < args.start_task:          # policzone w poprzednim kawalku
+            continue
         # Network weights PERSIST across tasks; fresh optimizer per task (clean per-task LR).
         # With task_cond: the CURRENT task's embedding V_k trains too (old V_i stay frozen).
         task_params = manager.task_parameters(k)
