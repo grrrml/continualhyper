@@ -174,11 +174,6 @@ def ddim_sample(
     return bundle.decode_latents(latents)
 
 
-# ile losowych kolorow tla trzymamy dla bootstrapu; wiecej niz krokow bootstrapu nie
-# ma sensu, a szesc wystarcza, zeby zaden kolor sie nie powtorzyl w tym samym regionie
-_BOOT_PALETTE = 6
-
-
 @torch.no_grad()
 def compose_sample_regions(
     bundle, manager, regions, global_hidden, uncond_hidden, global_pooled,
@@ -242,30 +237,20 @@ def compose_sample_regions(
         return m[None, None]
 
     masks = [_mask(r["box"]) for r in regions]
-    z_bgs = []
-    if bootstrap_steps > 0:
-        # MultiDiffusion-style bootstrapping: for the first K steps each region pass sees a
-        # latent whose OUTSIDE is a noised flat background, so the subject has nowhere to form
-        # except inside its box. Plain conditioning cannot do this (measured: a centred subject
-        # forms regardless); the paper's eq. 5 needs this trick and does not mention it.
-        #
-        # Tlo jest LOSOWANE, i to jest istotne. Przy stalej szarosci 0.5 kazdy z K krokow
-        # pokazuje regionowi ten sam kolor i model wypala go w latent: na scenie 3.3 przy
-        # K = 15 szara plyta pokrywala sie co do piksela z suma pudelek regionow. Losowy staly
-        # kolor zachowuje izolacje (region nadal nie widzi sasiadow), ale nie wnosi jednego
-        # uprzywilejowanego koloru -- tak jest tez w oryginalnym MultiDiffusion.
-        #
-        # VAE SDXL siedzi w fp32, a `dtype` to bf16 -- kodowanie musi isc w dtype VAE,
-        # inaczej wywala sie na niezgodnosci typow przy 1024. Kodujemy RAZ przed petla, bo
-        # VAE przy 1024^2 jest drogie, a w petli tylko wybieramy z palety.
-        for _ in range(_BOOT_PALETTE):
-            col = torch.rand(1, 3, 1, 1, generator=generator, device=device)
-            # .contiguous() nie jest ozdoba: expand daje widok o kroku 0, a .to() przy tym
-            # samym dtype (SD-1.5 ma VAE w fp32, jak col) zwraca TEN SAM obiekt, wiec bez tego
-            # do vae.encode szedlby tensor o zerowych krokach
-            flat = col.expand(1, 3, height, width).to(bundle.vae.dtype).contiguous()
-            z_bgs.append((bundle.vae.encode(flat * 2 - 1).latent_dist.mean
-                          * bundle.vae_scale_factor).to(dtype))
+    # MultiDiffusion-style bootstrapping: for the first K steps each region pass sees a latent
+    # whose OUTSIDE carries no information, so the subject has nowhere to form except inside its
+    # box. Plain conditioning cannot do this (measured: a centred subject forms regardless);
+    # the paper's eq. 5 needs this trick and does not mention it.
+    #
+    # Tlem jest CZYSTY SZUM na biezacym poziomie, a nie staly obraz. Dwie wczesniejsze wersje
+    # byly bledne i obie widac na obrazach: staly szary 0.5 zostawial szara plyte dokladnie
+    # w ksztalcie sumy pudelek (scena 3.3), a losowy staly kolor zamienil ja na kolorowe
+    # prostokaty. Kazdy staly obraz ma skladowa stala, ktora przecieka do wnetrza ramki przez
+    # globalne pole recepcyjne UNetu. Stan "jeszcze nierozstrzygniety" to x_t dla x_0 = 0,
+    # czyli `add_noise(zeros, eps, t)` -- wartosc oczekiwana zero, nic do wypalenia, a izolacja
+    # regionu zostaje.
+    boot = bootstrap_steps > 0
+
     uh = uncond_hidden.to(device=device, dtype=dtype)
     gh = global_hidden.to(device=device, dtype=dtype)
 
@@ -300,13 +285,11 @@ def compose_sample_regions(
                                     token_mask=r["token_mask"])
                 manager.compute_and_cache_loras()
                 inp_r = inp
-                if z_bgs and i < bootstrap_steps:
-                    # inny kolor na krok I na region: slad po tle usrednia sie do zera
-                    # zamiast zostawiac plyte w ksztalcie sumy pudelek
-                    z_bg = z_bgs[(i + ri) % len(z_bgs)]
-                    noise = torch.randn(z_bg.shape, generator=generator, device=device,
+                if boot and i < bootstrap_steps:
+                    zero = torch.zeros_like(latents)
+                    noise = torch.randn(zero.shape, generator=generator, device=device,
                                         dtype=dtype)
-                    bg_t = scheduler.add_noise(z_bg, noise, t.reshape(1))
+                    bg_t = scheduler.add_noise(zero, noise, t.reshape(1))
                     bg_t = scheduler.scale_model_input(bg_t, t)
                     mm = m.to(dtype)
                     inp_r = inp * mm + bg_t * (1 - mm)
