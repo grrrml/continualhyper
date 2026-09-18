@@ -133,6 +133,10 @@ def parse_args():
     p.add_argument("--start_task", type=int, default=0,
                    help="pierwsze zadanie do policzenia; wczesniejsze sa pomijane. "
                         "Wymaga --init_ckpt, ktory zawiera stan po zadaniu start_task-1")
+    p.add_argument("--end_task", type=int, default=None,
+                   help="ostatnie zadanie do policzenia (wlacznie). Pozwala pociac "
+                        "strumien na kawalki miesczace sie w limicie czasu; kolejny "
+                        "kawalek wznawia sie z checkpointu tego zadania")
     return p.parse_args()
 
 
@@ -351,6 +355,13 @@ def main():
     for k, spec in enumerate(specs):
         if k < args.start_task:          # policzone w poprzednim kawalku
             continue
+        if args.end_task is not None and k > args.end_task:
+            # wyjscie, nie break: po petli idzie koncowy przeglad WSZYSTKICH konceptow,
+            # ktory dla kawalka posredniego liczylby sie na niepelnym modelu i kosztowal
+            # kilkadziesiat minut. Kolejny kawalek wznawia sie z checkpointu per zadanie,
+            # ktory jest juz zapisany, wiec nic nie tracimy.
+            print(f"[CL] koniec kawalka na zadaniu {args.end_task}", flush=True)
+            raise SystemExit(0)
         # Network weights PERSIST across tasks; fresh optimizer per task (clean per-task LR).
         # With task_cond: the CURRENT task's embedding V_k trains too (old V_i stay frozen).
         task_params = manager.task_parameters(k)
