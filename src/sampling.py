@@ -174,6 +174,11 @@ def ddim_sample(
     return bundle.decode_latents(latents)
 
 
+# ile losowych kolorow tla trzymamy dla bootstrapu; wiecej niz krokow bootstrapu nie
+# ma sensu, a szesc wystarcza, zeby zaden kolor sie nie powtorzyl w tym samym regionie
+_BOOT_PALETTE = 6
+
+
 @torch.no_grad()
 def compose_sample_regions(
     bundle, manager, regions, global_hidden, uncond_hidden, global_pooled,
@@ -237,17 +242,27 @@ def compose_sample_regions(
         return m[None, None]
 
     masks = [_mask(r["box"]) for r in regions]
-    z_bg = None
+    z_bgs = []
     if bootstrap_steps > 0:
         # MultiDiffusion-style bootstrapping: for the first K steps each region pass sees a
         # latent whose OUTSIDE is a noised flat background, so the subject has nowhere to form
         # except inside its box. Plain conditioning cannot do this (measured: a centred subject
         # forms regardless); the paper's eq. 5 needs this trick and does not mention it.
+        #
+        # Tlo jest LOSOWANE, i to jest istotne. Przy stalej szarosci 0.5 kazdy z K krokow
+        # pokazuje regionowi ten sam kolor i model wypala go w latent: na scenie 3.3 przy
+        # K = 15 szara plyta pokrywala sie co do piksela z suma pudelek regionow. Losowy staly
+        # kolor zachowuje izolacje (region nadal nie widzi sasiadow), ale nie wnosi jednego
+        # uprzywilejowanego koloru -- tak jest tez w oryginalnym MultiDiffusion.
+        #
         # VAE SDXL siedzi w fp32, a `dtype` to bf16 -- kodowanie musi isc w dtype VAE,
-        # inaczej wywala sie na niezgodnosci typow przy 1024.
-        flat = torch.full((1, 3, height, width), 0.5, device=device, dtype=bundle.vae.dtype)
-        z_bg = (bundle.vae.encode(flat * 2 - 1).latent_dist.mean
-                * bundle.vae_scale_factor).to(dtype)
+        # inaczej wywala sie na niezgodnosci typow przy 1024. Kodujemy RAZ przed petla, bo
+        # VAE przy 1024^2 jest drogie, a w petli tylko wybieramy z palety.
+        for _ in range(_BOOT_PALETTE):
+            col = torch.rand(1, 3, 1, 1, generator=generator, device=device)
+            flat = col.expand(1, 3, height, width).to(bundle.vae.dtype)
+            z_bgs.append((bundle.vae.encode(flat * 2 - 1).latent_dist.mean
+                          * bundle.vae_scale_factor).to(dtype))
     uh = uncond_hidden.to(device=device, dtype=dtype)
     gh = global_hidden.to(device=device, dtype=dtype)
 
@@ -275,14 +290,17 @@ def compose_sample_regions(
         use_regions = regional_steps is None or i < regional_steps
         if use_regions:
             merged = alpha * eps_global
-            for r, m, ac in zip(regions, masks, ac_r):
+            for ri, (r, m, ac) in enumerate(zip(regions, masks, ac_r)):
                 if ground:
                     manager.set_ground(r["task_idx"], box_to_cxcywh(r["box"]))
                 manager.set_context(r["pooled"].to(device), task_idx=r["task_idx"],
                                     token_mask=r["token_mask"])
                 manager.compute_and_cache_loras()
                 inp_r = inp
-                if z_bg is not None and i < bootstrap_steps:
+                if z_bgs and i < bootstrap_steps:
+                    # inny kolor na krok I na region: slad po tle usrednia sie do zera
+                    # zamiast zostawiac plyte w ksztalcie sumy pudelek
+                    z_bg = z_bgs[(i + ri) % len(z_bgs)]
                     noise = torch.randn(z_bg.shape, generator=generator, device=device,
                                         dtype=dtype)
                     bg_t = scheduler.add_noise(z_bg, noise, t.reshape(1))
@@ -337,11 +355,14 @@ def compose_sample_single(
     dotyczyl GOLEGO maskowania uwagi; galaz groundingu powstala pozniej i jest UCZONA pchac
     mase konceptu do ramki, wiec ten wariant nie byl nigdy sprawdzony.
 
-    OGRANICZENIE, ktore trzeba znac przy czytaniu wynikow: `RegionKVAttnProcessor` liczy `q`
-    globalnie i `to_out` bez adaptera (zachowanie referencyjne Mix-of-Show), wiec w tym torze
-    dziala WYLACZNIE tekstowa polowa naszej LoRA (`to_k`/`to_v`). Nasze checkpointy maja
-    delty takze na `to_q`/`to_out.0`. Jesli podmioty znow beda sie zlewac, to jest pierwsza
-    dzwignia do sprawdzenia, a nie dowod, ze jedno przejscie nie dziala.
+    Zakres adaptera w tym torze: galaz regionu przechodzi przez WSZYSTKIE cztery projekcje
+    pod swoim adapterem (`to_q`, `to_k`, `to_v`, `to_out.0`), a scalanie regionow nastepuje
+    PO `to_out` -- patrz `RegionKVAttnProcessor._branch`. Wczesniej `q` liczylo sie raz
+    globalnie, a `to_out` raz na scalonym wyjsciu, oba pod `no_lora()`, wiec dzialala tylko
+    tekstowa polowa LoRA; naprawione w aa787eb (2026-09-14). Ma to znaczenie przy czytaniu
+    wynikow, bo ablacja `p022_noout` pokazuje, ze `to_out.0` jest dla tej metody krytyczne
+    (DINO 0.62 -> 0.35 po jego usunieciu), wiec KAZDY wynik kompozycji sprzed tego commitu
+    powstal z polowa metody wylaczona i nie jest porownywalny z pozniejszymi.
 
     `self_strength > 0`: MIEKKA separacja samo-uwagi (attn1) miedzy strefami, w jednostkach
     logitu. To jest jedyne miejsce, w ktorym powstaje "jeden spojny obiekt": attn2 trasuje
