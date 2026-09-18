@@ -93,6 +93,10 @@ def parse_args():
                          "takze podmiot<->tlo i zakazuje 60-68%% par uwagi")
     ap.add_argument("--self_sched", type=float, default=0.5,
                     help="frakcja krokow, przez ktore zyje separacja attn1")
+    ap.add_argument("--feather", type=float, default=0.0,
+                    help="rozmycie granic masek regionow w pikselach latentu; 0 = maski twarde, "
+                         "jak dotad. Przy trzech i wiecej regionach twarde granice zostawiaja "
+                         "pasy dokladnie na stykach pudelek")
     ap.add_argument("--res", type=int, default=0, help="0 = natywna dla backbone'u")
     ap.add_argument("--dry_run", type=int, default=0,
                     help="1 = bez GPU i bez wag: prompty, manifesty i podglady ukladu")
@@ -371,7 +375,8 @@ def main():
                                                  height=res, width=res, generator=g,
                                                  regional_steps=rs,
                                                  bootstrap_steps=boot,
-                                                 uncond_pooled=up, ground=bool(a.ground))
+                                                 uncond_pooled=up, ground=bool(a.ground),
+                                                 feather=a.feather)
                 save_image(img[0], os.path.join(d, f"{i}.png"))
             print(f"    [{tag(pt, boot, sc)}] {a.n} obrazow -> {d}", flush=True)
     print("\nDONE", flush=True)

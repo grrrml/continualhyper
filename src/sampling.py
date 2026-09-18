@@ -181,6 +181,7 @@ def compose_sample_regions(
     height: Optional[int] = None, width: Optional[int] = None, generator=None, scheduler=None,
     regional_steps: Optional[int] = None, bootstrap_steps: int = 0,
     uncond_pooled: Optional[torch.Tensor] = None, ground: bool = False,
+    feather: float = 0.0,
 ):
     """CIDM-style region noise estimation (arXiv 2410.17594 eq. 4-5) with OUR adapters.
 
@@ -236,7 +237,19 @@ def compose_sample_regions(
               int(x0 * lw):max(int(x0 * lw) + 1, int(round(x1 * lw)))] = 1.0
         return m[None, None]
 
-    masks = [_mask(r["box"]) for r in regions]
+    def _feather(m, sigma):
+        """Gauss separowalny na masce [1,1,lh,lw]; sigma w pikselach LATENTU."""
+        if sigma <= 0:
+            return m
+        rad = max(1, int(round(3 * sigma)))
+        x = torch.arange(-rad, rad + 1, device=m.device, dtype=m.dtype)
+        k = torch.exp(-(x ** 2) / (2 * sigma ** 2))
+        k = k / k.sum()
+        m = torch.nn.functional.conv2d(m, k.view(1, 1, 1, -1), padding=(0, rad))
+        m = torch.nn.functional.conv2d(m, k.view(1, 1, -1, 1), padding=(rad, 0))
+        return m
+
+    masks = [_feather(_mask(r["box"]), feather) for r in regions]
     # MultiDiffusion-style bootstrapping: for the first K steps each region pass sees a latent
     # whose OUTSIDE carries no information, so the subject has nowhere to form except inside its
     # box. Plain conditioning cannot do this (measured: a centred subject forms regardless);
@@ -277,6 +290,10 @@ def compose_sample_regions(
 
         use_regions = regional_steps is None or i < regional_steps
         if use_regions:
+            wsum = sum(masks).to(dtype)
+            # dzielnik >= 1: tam gdzie maski sie nie nakladaja nic nie zmienia, a w strefie
+            # przenikania usrednia zamiast sumowac
+            wnorm = torch.clamp(wsum, min=1.0)
             merged = alpha * eps_global
             for ri, (r, m, ac) in enumerate(zip(regions, masks, ac_r)):
                 if ground:
@@ -297,9 +314,8 @@ def compose_sample_regions(
                                     encoder_hidden_states=r["hidden"].to(device=device, dtype=dtype),
                                     added_cond_kwargs=ac or None).sample
                 eps_r = eps_u + guidance_scale * (eps_c - eps_u)
-                merged = merged + (1.0 - alpha) * eps_r * m.to(dtype)
-            covered = torch.clamp(sum(masks), 0, 1).to(dtype)
-            merged = merged + (1.0 - alpha) * eps_global * (1.0 - covered)   # background
+                merged = merged + (1.0 - alpha) * eps_r * (m.to(dtype) / wnorm)
+            merged = merged + (1.0 - alpha) * eps_global * (1.0 - wsum / wnorm)   # background
             eps = merged
         else:
             eps = eps_global
