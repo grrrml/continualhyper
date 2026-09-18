@@ -296,12 +296,18 @@ def compose_sample_regions(
 
         use_regions = regional_steps is None or i < regional_steps
         if use_regions:
-            wsum = sum(masks).to(dtype)
+            # W FAZIE BOOTSTRAPU scalamy maskami TWARDYMI. Region widzi wtedy poza swoja ramka
+            # czysty szum, wiec jego predykcja jest sensowna wylacznie w jej wnetrzu; wygladzona
+            # maska siegalaby poza nia i dokladala predykcje policzona na szumie z waga rzedu
+            # polowy. Zmierzone: przy sigma 3 `wsum` nie dochodzi nigdzie do 1 (maks 0.76),
+            # wiec zanieczyszczenie wchodzi w cale plotno i obraz rozpada sie w szum.
+            use_masks = hard_masks if (boot and i < bootstrap_steps) else masks
+            wsum = sum(use_masks).to(dtype)
             # dzielnik >= 1: tam gdzie maski sie nie nakladaja nic nie zmienia, a w strefie
             # przenikania usrednia zamiast sumowac
             wnorm = torch.clamp(wsum, min=1.0)
             merged = alpha * eps_global
-            for ri, (r, m, mh, ac) in enumerate(zip(regions, masks, hard_masks, ac_r)):
+            for ri, (r, m, mh, ac) in enumerate(zip(regions, use_masks, hard_masks, ac_r)):
                 if ground:
                     manager.set_ground(r["task_idx"], box_to_cxcywh(r["box"]))
                 manager.set_context(r["pooled"].to(device), task_idx=r["task_idx"],
