@@ -126,7 +126,7 @@ class ContinualHyperManager(nn.Module):
         # 1280 na SDXL (te2.projection_dim). Byla zaszyta jako 768 w init_ground_gsa, co na
         # SDXL wywalalo pierwszy krok z groundingiem na niezgodnosci ksztaltu.
         self.ground_tok_dim = int(clip_dim)
-        # Ga³ki inferencyjne groundingu trzymane jawnie, zeby nie zyly w ukrytych getattr:
+        # Galki inferencyjne groundingu trzymane jawnie, zeby nie zyly w ukrytych getattr:
         self.bs_dilate = 3               # rozszerzenie ramki bootstrapu w komorkach latentu
         if self.ground_cond:
             gin = (int(tc.get("key_dim") or clip_dim)) + 64
@@ -354,7 +354,13 @@ class ContinualHyperManager(nn.Module):
         gb = self._ground_box or (0.5, 0.5, 1.0, 1.0)
 
         def _mask(cx, cy, bw, bh):
-            sh = 40.0
+            # Ostrosc krawedzi maski GROUNDINGU. 40.0 to wartosc, z ktora trenowano wszystkie
+            # checkpointy, wiec jest domyslna i zachowuje zachowanie co do bitu. Przy 40 i mapie
+            # 8x8 (komorka 0,125 kadru) sigmoid(5) = 0,993, czyli maska jest twardym prostokatem:
+            # koncept domalowuje sie az do linii pudelka i konczy na niej urwaniem albo
+            # prostokatnym halo. Nizsza wartosc daje zanik do wewnatrz -- podmiot skupia sie
+            # w srodku ramki, a przy krawedzi oddaje miejsce scenie.
+            sh = float(getattr(self, "ground_sharp", 40.0))
             return (torch.sigmoid(sh * (g[:, 0] - (cx - bw / 2)))
                     * torch.sigmoid(sh * ((cx + bw / 2) - g[:, 0]))
                     * torch.sigmoid(sh * (g[:, 1] - (cy - bh / 2)))

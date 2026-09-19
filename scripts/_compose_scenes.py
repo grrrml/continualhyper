@@ -72,6 +72,10 @@ def parse_args():
                          "kare do map ukladu (0 = wszystkie). Punkt do wlasnego podkatalogu")
     ap.add_argument("--kappa", type=float, default=-1.0,
                     help="ground_gain_base; <0 zostawia domyslne 1.0")
+    ap.add_argument("--ground_sharp", type=float, default=-1.0,
+                    help="ostrosc krawedzi maski GROUNDINGU (nie maski scalania -- ta jest pod "
+                         "--feather). -1 = zostaw 40.0 z treningu. Nizej = koncept zanika przed "
+                         "linia pudelka, zamiast konczyc sie na niej urwaniem.")
     ap.add_argument("--kappa_area_ref", type=float, default=0.0,
                     help="kappa per region: mnoznik (ref/powierzchnia_pudelka)**pow. 0 = wylaczone. "
                          "0.22 to srednia powierzchnia pudelka w scenach dwuregionowych, czyli "
@@ -243,6 +247,8 @@ def main():
             manager.ground_gain_base = a.kappa
         if a.ground_sched >= 0:
             manager.ground_sched_frac = a.ground_sched
+        if a.ground_sharp > 0:
+            manager.ground_sharp = a.ground_sharp
         if a.ground:
             if not getattr(manager, "ground_cond", False):
                 raise SystemExit("--ground 1 wymaga checkpointu z ground_cond: true")
@@ -341,6 +347,8 @@ def main():
                          "self_strength": st, "self_leak": lk,
                          "self_res": sres or None, "self_bg_shared": bool(a.self_bg),
                          "kappa": (a.kappa if a.kappa >= 0 else 1.0),
+                         "ground_sharp": (a.ground_sharp if a.ground_sharp > 0 else 40.0),
+                         "feather": a.feather,
                          "kappa_area_ref": a.kappa_area_ref or None,
                          "kappa_area_pow": a.kappa_area_pow,
                          "kappa_mul": ({r["v"]: round(g["kappa_mul"], 3)
