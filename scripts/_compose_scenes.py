@@ -72,6 +72,16 @@ def parse_args():
                          "kare do map ukladu (0 = wszystkie). Punkt do wlasnego podkatalogu")
     ap.add_argument("--kappa", type=float, default=-1.0,
                     help="ground_gain_base; <0 zostawia domyslne 1.0")
+    ap.add_argument("--kappa_area_ref", type=float, default=0.0,
+                    help="kappa per region: mnoznik (ref/powierzchnia_pudelka)**pow. 0 = wylaczone. "
+                         "0.22 to srednia powierzchnia pudelka w scenach dwuregionowych, czyli "
+                         "tych, na ktorych kappa 1.0 daje spojne obrazy.")
+    ap.add_argument("--kappa_area_pow", type=float, default=1.0,
+                    help="wykladnik skalowania; 1.0 = odwrotnie do powierzchni, 0.5 = odwrotnie "
+                         "do rozmiaru liniowego")
+    ap.add_argument("--kappa_mul_clip", type=float, default=4.0,
+                    help="gorne ograniczenie mnoznika, zeby male pudelko nie dostalo kappy, "
+                         "przy ktorej podmiot maluje po kadrze")
     ap.add_argument("--ground_sched", type=float, default=-1.0,
                     help="ground_sched_frac, czyli frakcja krokow z aktywnym GSA. UWAGA: "
                          "nie ustawia tego ani config, ani ten skrypt, wiec domyslnie wychodzi "
@@ -298,8 +308,14 @@ def main():
                 if int(tm.sum()) == 0:
                     raise SystemExit(f"scena {s['id']}: pusty span '{r['phrase']}' "
                                      f"w '{r['prompt']}'")
+                x0, y0, x1, y1 = r["box"]
+                area = max(1e-6, (x1 - x0) * (y1 - y0))
+                kmul = 1.0
+                if a.kappa_area_ref > 0:
+                    kmul = min(a.kappa_mul_clip,
+                               (a.kappa_area_ref / area) ** a.kappa_area_pow)
                 regs.append({"task_idx": r["task_idx"], "hidden": h, "pooled": pl,
-                             "box": r["box"],
+                             "box": r["box"], "kappa_mul": kmul,
                              "token_mask": tm if cfg.get("token_mask_lora") else None})
 
         for pt, boot, sc in points:
@@ -325,6 +341,11 @@ def main():
                          "self_strength": st, "self_leak": lk,
                          "self_res": sres or None, "self_bg_shared": bool(a.self_bg),
                          "kappa": (a.kappa if a.kappa >= 0 else 1.0),
+                         "kappa_area_ref": a.kappa_area_ref or None,
+                         "kappa_area_pow": a.kappa_area_pow,
+                         "kappa_mul": ({r["v"]: round(g["kappa_mul"], 3)
+                                        for r, g in zip(regions, regs)}
+                                       if regs and a.kappa_area_ref > 0 else None),
                          "ground_sched_frac": (a.ground_sched if a.ground_sched >= 0 else 1.0),
                          "self_sched": sch if st > 0 else None,
                          "scheduler": "DDIM", "negative_prompt": NEG,

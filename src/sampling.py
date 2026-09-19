@@ -280,13 +280,15 @@ def compose_sample_regions(
 
     for i, t in enumerate(scheduler.timesteps):
         inp = scheduler.scale_model_input(latents, t)
+        step_gain = 0.0
         if ground:
             # harmonogram kappa jak w ddim_sample: grounding zyje tylko przez poczatkowa
             # frakcje krokow, bo uklad rozstrzyga sie przy wysokim szumie
             frac = i / max(1, len(scheduler.timesteps))
-            manager.ground_gain = (float(getattr(manager, "ground_gain_base", 1.0))
-                                   if frac < float(getattr(manager, "ground_sched_frac", 1.0))
-                                   else 0.0)
+            step_gain = (float(getattr(manager, "ground_gain_base", 1.0))
+                         if frac < float(getattr(manager, "ground_sched_frac", 1.0))
+                         else 0.0)
+            manager.ground_gain = step_gain
         with manager.no_lora():                                   # unconditional, shared
             eps_u = bundle.unet(inp, t, encoder_hidden_states=uh,
                                 added_cond_kwargs=ac_u or None).sample
@@ -310,6 +312,15 @@ def compose_sample_regions(
             for ri, (r, m, mh, ac) in enumerate(zip(regions, use_masks, hard_masks, ac_r)):
                 if ground:
                     manager.set_ground(r["task_idx"], box_to_cxcywh(r["box"]))
+                    # kappa PER REGION. Zmierzone: przy jednej globalnej kappie nie ma wartosci
+                    # dobrej dla wszystkich scen. kappa 1.0 daje spojne obrazy przy dwoch
+                    # regionach (pudelka 0.20-0.24 powierzchni kadru), a przy czterech
+                    # (0.10-0.16) gubi podmioty -- w scenie 3.3 przezyl dokladnie najwiekszy
+                    # region, w 3.2 i 12.4 oba najmniejsze zniknely. Kappa 4.0 wstawia podmioty
+                    # wszedzie, ale przy duzych pudelkach maluje nimi po kadrze (psy o dwoch
+                    # glowach). Wniosek: sila groundingu musi byc mierzona na jednostke
+                    # powierzchni ramki, nie na kadr. `kappa_mul` liczy `_compose_scenes.py`.
+                    manager.ground_gain = step_gain * float(r.get("kappa_mul", 1.0))
                 manager.set_context(r["pooled"].to(device), task_idx=r["task_idx"],
                                     token_mask=r["token_mask"])
                 manager.compute_and_cache_loras()
