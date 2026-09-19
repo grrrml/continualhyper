@@ -419,7 +419,7 @@ class RegionKVAttnProcessor:
             side_ = int(round(n_img ** 0.5))
             if (region is not None and self.ground and getattr(m, "ground_gsa", False)
                     and side_ * side_ == n_img):
-                inj = self._gsa(attn, hidden_states, side_, o_)
+                inj = self._gsa(attn, hidden_states, side_, o_, region)
                 if inj is not None:
                     o_ = o_ + inj          # jak w GroundedAttnProcessor: wstrzyk idzie przez to_out
             return attn.to_out[1](attn.to_out[0](attn.batch_to_head_dim(o_)))
@@ -482,7 +482,7 @@ class RegionKVAttnProcessor:
         return out / attn.rescale_output_factor
 
 
-    def _gsa(self, attn, hidden_states, side: int, like: torch.Tensor):
+    def _gsa(self, attn, hidden_states, side: int, like: torch.Tensor, region=None):
         """kappa * tanh(gate) * inside(ramka) * read -- ten sam wzor co w GroundedAttnProcessor,
         tyle ze wolany raz na REGION, nie raz na obraz. Ramki scen CIDM sa rozlaczne (sprawdzone
         dla wszystkich 11), wiec wklady regionow nie interferuja. Zwraca None, gdy checkpoint
@@ -498,6 +498,11 @@ class RegionKVAttnProcessor:
         inside = m.geo_inside(side, side, like.device, like.dtype)       # [n,1] przy jednej ramce
         ins = inside.unsqueeze(0) if inside.ndim == 2             else inside.repeat_interleave(attn.heads, dim=0)
         gain = float(getattr(m, "ground_gain", 1.0))
+        if region is not None:
+            # kappa per region, ta sama wielkosc co w compose_sample_regions. Tam mnoznik
+            # wchodzi przez `manager.ground_gain`, bo kazdy region ma tam WLASNY przebieg
+            # UNetu; tutaj wszystkie regiony ida jednym przebiegiem, wiec musi wejsc tu.
+            gain *= float(region.get("kappa_mul", 1.0))
         gres = getattr(m, "ground_gain_res", None)
         if gres:                       # kappa per rozdzielczosc mapy, jak w GroundedAttnProcessor
             gain *= float(gres.get(side, 1.0))
