@@ -46,7 +46,7 @@ def _read_prompts(category):
 @torch.no_grad()
 def gen_concept(bundle, manager, gen_repl, clipt_repl, category, out_dir, n, steps, gscale, seed,
                 task_idx=None, mask_phrase=None, lora_start_frac=0.0, sample_batch=1,
-                uncond_legacy_zero=False):
+                uncond_legacy_zero=False, cidm_pair=False):
     prompts = _read_prompts(category)
     sdir = os.path.join(out_dir, "samples")
     os.makedirs(sdir, exist_ok=True)
@@ -56,6 +56,17 @@ def gen_concept(bundle, manager, gen_repl, clipt_repl, category, out_dir, n, ste
     res = int(getattr(bundle, "default_resolution", 512))     # 512 (SD-1.5) / 1024 (SDXL)
     lat_shape = (bundle.latent_channels, res // 8, res // 8)
     info, count = [], 0
+    if cidm_pair:
+        # Sparowanie po ziarnie z ich `inference.py`. Ich generator jest tworzony NA PROMPT
+        # (`torch.Generator('cuda').manual_seed(2024)` wewnatrz petli po promptach) i ciagniety
+        # przez `iter` wywolan pipeline'u, kazde losujace blok `(batch_size, 4, 64, 64)`.
+        # `_cidm_gen.py` ustawia batch_size = min(per_prompt, 5) oraz iter = round(per/bs),
+        # wiec dla dziesieciu obrazow sa to dwa bloki po piec. Odtwarzamy dokladnie te
+        # kolejnosc, zeby nasz obraz o indeksie j startowal z TEGO SAMEGO szumu co ich.
+        # Losujemy w fp32, bo ich pipeline dziala w fp32 (ich `torch_dtype=torch.float16`
+        # trafil w nawiasy schedulera i jest no-opem), i dopiero potem rzutujemy.
+        _bs_their = min(n, 5)
+        _iters = max(1, round(n / _bs_their))
     for p in prompts:
         gen_prompt = p.replace("<TOK>", gen_repl)      # generation: "<eval_prefix> V<k> <class>"
         clipt_text = p.replace("<TOK>", clipt_repl)    # CLIP-T candidate: "<eval_prefix> <class>"
@@ -64,16 +75,25 @@ def gen_concept(bundle, manager, gen_repl, clipt_repl, category, out_dir, n, ste
         if mask_phrase:
             from .tokens import token_span_mask
             token_mask = token_span_mask(bundle.tokenizer, [gen_prompt], mask_phrase)
+        seq = None
+        if cidm_pair:
+            _g = torch.Generator(device=bundle.device).manual_seed(2024)
+            seq = torch.cat([torch.randn((_bs_their,) + lat_shape, generator=_g,
+                                         device=bundle.device, dtype=torch.float32)
+                             for _ in range(_iters)], dim=0)[:n].to(bundle.dtype)
         done = 0
         while done < n:
             bs = min(sample_batch, n - done)
             # one generator PER IMAGE, seeded exactly as in the unbatched path -> the drawn
             # latents (and therefore the images) are identical regardless of sample_batch
-            lat = torch.stack([
-                torch.randn(lat_shape, generator=torch.Generator(device=bundle.device)
-                            .manual_seed(seed + count + i), device=bundle.device,
-                            dtype=bundle.dtype)
-                for i in range(bs)])
+            if seq is not None:
+                lat = seq[done:done + bs]
+            else:
+                lat = torch.stack([
+                    torch.randn(lat_shape, generator=torch.Generator(device=bundle.device)
+                                .manual_seed(seed + count + i), device=bundle.device,
+                                dtype=bundle.dtype)
+                    for i in range(bs)])
             imgs = ddim_sample(bundle, manager, cond_hidden, uncond_hidden, pooled,
                                num_inference_steps=steps, guidance_scale=gscale, batch_size=bs,
                                height=res, width=res,
@@ -122,6 +142,12 @@ def parse_args():
                    help="enable LoRA only after this fraction of denoising steps")
     p.add_argument("--ground_scale_with_lora", action="store_true",
                    help="wstrzyk GSA mnozony przez --lora_scale (oba tory adaptera slabna razem)")
+    p.add_argument("--cidm_pair", action="store_true",
+                   help="losuj latenty dokladnie tak, jak ich `inference.py`: jeden generator "
+                        "na prompt z ziarnem 2024, bloki po min(n,5). Obraz o indeksie j "
+                        "startuje wtedy z tego samego szumu co ich obraz j, wiec para jest "
+                        "porownywalna kadr w kadr. Reszta protokolu juz sie zgadza: DPM++, "
+                        "50 krokow, CFG 7.5.")
     p.add_argument("--uncond_legacy_zero", action="store_true",
                    help="SDXL: zerowe pooled w galezi uncond przy sekwencji NEG (zachowanie sprzed "
                         "2026-09-07, tylko do odtworzenia wczesniejszych liczb SDXL)")
@@ -278,7 +304,8 @@ def main():
                                             if cfg.get("token_mask_lora") else None),
                                lora_start_frac=float(args.lora_start_frac),
                                sample_batch=int(args.sample_batch),
-                               uncond_legacy_zero=bool(args.uncond_legacy_zero))
+                               uncond_legacy_zero=bool(args.uncond_legacy_zero),
+                               cidm_pair=bool(args.cidm_pair))
             print(f"[gen] after_task{k:02d} / {c['concept_id']} ({cat}, '{gen_repl}'): {nimg} imgs",
                   flush=True)
     print(f"[gen] DONE -> {out_root}", flush=True)
