@@ -30,7 +30,7 @@ Knoby badane tym skryptem:
 
 Run: python -u scripts/_ground_iou.py --grid 4.0:0.15,4.0:0.15:5 --n 3
 """
-import os, sys, glob, argparse
+import os, sys, glob, json, argparse
 import numpy as np
 import torch
 sys.path.insert(0, ".")
@@ -98,6 +98,11 @@ ap.add_argument("--seed0", type=int, default=31337,
 ap.add_argument("--confine_tail", action="store_true",
                 help="kara confine do konca sekwencji (CLIP przyczynowy), nie tylko na spanie")
 ap.add_argument("--out", default="", help="katalog na podglady z ramkami (pusty = nie zapisuj)")
+ap.add_argument("--out_all", action="store_true",
+                help="zapisuj KAZDA probke, nie tylko pierwsza, i obok kazdej czysty kadr "
+                     "plus JSON z ramkami. Do budowy puli kadrow pod figure placementu: "
+                     "ramki rysuje wtedy figura (wektorowo, zaokraglone rogi jak fig. 7), "
+                     "a nie PIL. Bez tej flagi zachowanie jest dokladnie jak dotad.")
 ap.add_argument("--only_concepts", default="",
                 help="concept_id po przecinku; puste = wszystkie obiektowe. Potrzebne przy configach "
                      "50 konceptow, zeby wiersz tabeli dalej znaczyl siedem obiektow CIFC")
@@ -477,7 +482,18 @@ for kap, sched, conf in GRID:
                     st["bgg"] += bs[0]
                     st["bgs"] += bs[1]
                     st["nbg"] += 1
-                if a.out and i == 0:
+                if a.out and (i == 0 or a.out_all):
+                    if a.out_all:
+                        _stem = (c["concept_id"] + f"_k{kap_eff}_s{sched}_c{conf}_{bname}"
+                                 + ("" if a.layout == "branch" else "_" + a.layout)
+                                 + f"_i{i}")
+                        pil.save(os.path.join(a.out, _stem + "_clean.png"))
+                        json.dump({"concept": c["concept_id"], "box": bname, "seed_idx": i,
+                                   "req": [float(v) for v in req],
+                                   "det": ([float(v) for v in dbox] if dbox is not None else None),
+                                   "iou": (float(iou) if dbox is not None else 0.0),
+                                   "size": list(pil.size)},
+                                  open(os.path.join(a.out, _stem + ".json"), "w"))
                     dr = ImageDraw.Draw(pil)
                     dr.rectangle(req, outline=(255, 0, 0), width=3)
                     if dbox is not None:
@@ -487,7 +503,8 @@ for kap, sched, conf in GRID:
                     # zostaly te same; bez niego trzy wiersze tabeli nadpisuja sie w --out.
                     _sfx = "" if a.layout == "branch" else "_" + a.layout
                     pil.save(os.path.join(a.out, c["concept_id"]
-                                          + f"_k{kap_eff}_s{sched}_c{conf}_{bname}{_sfx}.png"))
+                                          + f"_k{kap_eff}_s{sched}_c{conf}_{bname}{_sfx}"
+                                          + (f"_i{i}" if a.out_all else "") + ".png"))
         n, nd = max(1.0, st["n"]), max(1.0, st["ndet"])
         # TA liczona wobec promptu BAZOWEGO takze w trybie `prompt`: fraza pozycji jest
         # czescia METODY (jak ramka w trybie branch), a nie zamowionej tresci -- liczona
