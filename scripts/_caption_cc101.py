@@ -224,6 +224,7 @@ def main():
                        if os.path.isdir(os.path.join(a.data, d))))
     attr_hits = {}
     missing = {}
+    repeated = {}
     total = 0
     for cid in concepts:
         paths = images_of(os.path.join(a.data, cid))
@@ -244,6 +245,14 @@ def main():
         bad = [c for c in caps if cw not in c]
         if bad:
             missing[cid] = (len(bad), bad[0])
+        # ... i drugi kierunek tego samego warunku: slowo klasy DWA razy. Captioning
+        # jest warunkowy, wiec BLIP dostaje slowo klasy jako prompt i moze go powtorzyc
+        # w kontynuacji ('cat in a cat house'). Nasz `token_span_mask` zaznaczy wtedy
+        # oba spany i adapter zadziala takze na drugim, a `trainer_edlora.py` metody
+        # benchmarku PADA, bo sklada mapy uwagi przez torch.stack po batchu.
+        dupes = [c for c in caps if c.lower().count(cw.lower()) > 1]
+        if dupes:
+            repeated[cid] = (len(dupes), dupes[0])
         # przymiotnik przed slowem klasy: heurystyka, tylko do wypelnienia attr_strip
         pat = re.compile(r"\b(\w+)\s+" + re.escape(cw) + r"\b", re.I)
         hits = sorted({m.group(0).lower() for c in caps for m in [pat.search(c)] if m})
@@ -262,6 +271,13 @@ def main():
             print(f"  {cid}: {k} | np. {ex!r}", flush=True)
     else:
         print(f"[cap] slowo klasy obecne we wszystkich {total} captionach", flush=True)
+    if repeated:
+        n_rep = sum(k for k, _ in repeated.values())
+        print(f"\n[cap] UWAGA: {n_rep}/{total} captionow ma slowo klasy WIECEJ NIZ RAZ. "
+              f"Trening metody benchmarku sie na tym wywala, a nasz adapter dziala "
+              f"wtedy na dwoch spanach zamiast jednego:", flush=True)
+        for cid, (k, ex) in sorted(repeated.items()):
+            print(f"  {cid}: {k} | np. {ex!r}", flush=True)
     if attr_hits:
         print("\n[cap] fraza przed slowem klasy, kandydaci do attr_strip:", flush=True)
         for cid, hits in attr_hits.items():

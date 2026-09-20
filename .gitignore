@@ -38,3 +38,6 @@ work/
 results
 outputs
 work
+
+# kopia runnerow przed lataniem (poza gitem, jak same runnery)
+.runners-backup-*/

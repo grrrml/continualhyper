@@ -62,6 +62,12 @@ def main():
     ap.add_argument("--sd", default="stable-diffusion-v1-5/stable-diffusion-v1-5")
     ap.add_argument("--final_only", action="store_true",
                     help="tylko checkpoint po ostatnim zadaniu (wiersz modelu koncowego)")
+    ap.add_argument("--eval_first", type=int, default=0,
+                    help="oceniaj tylko pierwsze N konceptow strumienia (0 = wszystkie). "
+                         "Fuzja adapterow zostaje pelna, 1..k+1 -- ogranicza sie WYLACZNIE "
+                         "zbior mierzony. Potrzebne do krzywej retencji: w kazdym punkcie "
+                         "T mierzymy te same dziesiec konceptow, wiec koszt punktu nie "
+                         "rosnie z T (10 komorek zamiast T).")
     ap.add_argument("--cids_from", default=None,
                     help="nasz config yaml, z ktorego brac concept_id; MUSI byc ten sam, "
                          "ktorym potem liczymy metryki, bo `cifc_metrics.py` sklada sciezke "
@@ -100,7 +106,8 @@ def main():
         cfg_path = os.path.join(root, f"_cfg_k{k}_p{os.getpid()}.json")
         json.dump(cfg, open(cfg_path, "w"), indent=1)
 
-        for j in range(k + 1):
+        n_eval = min(k + 1, a.eval_first) if a.eval_first else k + 1
+        for j in range(n_eval):
             cid = cids[j] if j < len(cids) else f"task{j:02d}"
             dst = os.path.join(out_root, f"after_task{k:02d}", f"task{j:02d}_{cid}")
             if os.path.exists(os.path.join(dst, "prompts.json")):

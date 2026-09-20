@@ -45,6 +45,13 @@ def main():
         ta, tb = tokens(k)
         cls = c["class_word"]
         init = cls.split()[-1]                       # initializer musi byc jednym tokenem
+        # ...a "jeden token" znaczy jeden token CLIP-a, nie jedno slowo. Ich
+        # trainer_edlora.py:176 rzuca ValueError, gdy tokenizer rozbije initializer na
+        # wiecej niz jeden id. Sprawdzone w vocab.json z SD1.5: "houseplant" i "plushie"
+        # sie rozbijaja, pozostale 23 slowa klas z T50_mixed nie. Podmieniamy je na
+        # najblizsze jednotokenowe slowo - initializer tylko inicjuje embedding drugiego
+        # tokenu konceptu, wiec liczy sie sasiedztwo semantyczne, nie doslownosc.
+        init = {'houseplant': 'plant', 'plushie': 'plush'}.get(init, init)
         img = os.path.join(CIFC_REL, c["images_dir"])
         cap = os.path.join(CIFC_REL, c["caption_dir"]) if c.get("caption_dir") else ""
         s = tpl
@@ -59,6 +66,14 @@ def main():
         s = re.sub(r"^    batch_size_per_gpu: 1$", "    batch_size_per_gpu: 2", s, flags=re.M)
         s = re.sub(r"^  val_during_save: .*$", "  val_during_save: false", s, flags=re.M)
         s = re.sub(r"^  compose_visualize: .*$", "  compose_visualize: false", s, flags=re.M)
+        # enable_xformers: na Heliosie xformers jest swiadomie pominiety
+        # (slurm/clusters/helios.sh, SKIP_PACKAGES): kolo 0.0.28 jest zbudowane pod
+        # torch 2.3.1 i pod 2.6 nie laduje rozszerzen CUDA. Ich trainer robi z tej flagi
+        # tylko `assert is_xformers_available()` (trainer_edlora.py:52) i nigdzie nie
+        # wlacza memory-efficient attention jawnie, a lib/models/edlora.py ma pelny
+        # fallback na natywna uwage. Wylaczenie flagi nie zmienia numeryki, a bez tego
+        # zadanie 1 padloby na assercie zaraz po starcie.
+        s = re.sub(r"^  enable_xformers: .*$", "  enable_xformers: false", s, flags=re.M)
         out = os.path.join(a.out_dir, f"task_{k}.yml")
         open(out, "w", encoding="utf-8", newline="\n").write(s)
         rows.append((k, c["concept_id"], cls, f"{ta} {tb}"))
