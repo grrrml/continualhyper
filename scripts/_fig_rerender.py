@@ -71,6 +71,11 @@ def main():
     ap.add_argument("--seed0", type=int, default=7000)
     ap.add_argument("--steps", type=int, default=50)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--prompt", default=None,
+                    help="nadpisuje prompt z configu dla WSZYSTKICH renderowanych zadan. "
+                         "Uzywac z jednym --tasks, inaczej ten sam prompt pojdzie do roznych "
+                         "konceptow. Slowo klasy do maski tokenow zostaje z configu, wiec "
+                         "musi w tym promptcie wystapic.")
     a = ap.parse_args()
 
     cfg = load_config(a.config)
@@ -100,7 +105,7 @@ def main():
                 print(f"[fig] checkpoint {ck} nie widzial zadania {t}, pomijam", flush=True)
                 continue
             c = cfg["concepts"][t]
-            prompt = c.get("prompt") or f"a photo of {c['class_word']}"
+            prompt = a.prompt or c.get("prompt") or f"a photo of {c['class_word']}"
             cls = c["class_word"]
             ch, pooled, _ = bundle.encode_text([prompt])
             tm = (token_span_mask(bundle.tokenizer, [prompt], cls).to(device)
