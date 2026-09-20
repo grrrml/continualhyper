@@ -181,7 +181,7 @@ def compose_sample_regions(
     height: Optional[int] = None, width: Optional[int] = None, generator=None, scheduler=None,
     regional_steps: Optional[int] = None, bootstrap_steps: int = 0,
     uncond_pooled: Optional[torch.Tensor] = None, ground: bool = False,
-    feather: float = 0.0,
+    feather: float = 0.0, global_boot: int = 0,
 ):
     """CIDM-style region noise estimation (arXiv 2410.17594 eq. 4-5) with OUR adapters.
 
@@ -289,10 +289,36 @@ def compose_sample_regions(
                          if frac < float(getattr(manager, "ground_sched_frac", 1.0))
                          else 0.0)
             manager.ground_gain = step_gain
+        # ODBICIE BOOTSTRAPU, ale dla galezi GLOBALNEJ. Po co: poza pudelkami scalanie
+        # redukuje sie do `eps = eps_global` (bo wsum = 0, wiec czlon alpha i czlon tla
+        # sumuja sie do jednosci), a galaz globalna dostaje WSPOLNY latent, w ktorym siedza
+        # juz czesciowo uformowane podmioty. Przy CFG rozwija to, co widzi -- bez adaptera
+        # i bez ramki -- i stad bezglowe kopie konceptow w tle (zmierzone: 3 z 11 scen).
+        # Przez pierwsze `global_boot` krokow pokazujemy jej wiec TLO BEZ PODMIOTOW: wnetrza
+        # pudelek zastapione tym samym "nierozstrzygnietym" x_t dla x_0 = 0, ktorego uzywa
+        # bootstrap regionow. Uklad tla rozstrzyga sie wtedy bez podmiotow, wiec nie ma czego
+        # duplikowac; od kroku `global_boot` wglad wraca i cienie moga sie jeszcze uformowac.
+        #
+        # `alpha` jest na ten czas zerowana, bo przy zamaskowanym latencie predykcja globalna
+        # WEWNATRZ pudelek jest bez sensu, a czlon `alpha * eps_global` wpuscilby jej 10%
+        # w srodek podmiotu.
+        #
+        # Domyslnie 0 = wylaczone i sciezka jest bitowo ta sama co dotad (losowanie szumu
+        # siedzi wewnatrz `if`, wiec nie rusza strumienia RNG).
+        inp_g = inp
+        alpha_eff = alpha
+        if global_boot and i < global_boot:
+            mm_all = torch.clamp(sum(hard_masks), max=1.0).to(dtype)
+            zero = torch.zeros_like(latents)
+            noise = torch.randn(zero.shape, generator=generator, device=device, dtype=dtype)
+            bg_t = scheduler.add_noise(zero, noise, t.reshape(1))
+            bg_t = scheduler.scale_model_input(bg_t, t)
+            inp_g = inp * (1 - mm_all) + bg_t * mm_all
+            alpha_eff = 0.0
         with manager.no_lora():                                   # unconditional, shared
-            eps_u = bundle.unet(inp, t, encoder_hidden_states=uh,
+            eps_u = bundle.unet(inp_g, t, encoder_hidden_states=uh,
                                 added_cond_kwargs=ac_u or None).sample
-            eps_g_c = bundle.unet(inp, t, encoder_hidden_states=gh,
+            eps_g_c = bundle.unet(inp_g, t, encoder_hidden_states=gh,
                                   added_cond_kwargs=ac_g or None).sample
         eps_global = eps_u + guidance_scale * (eps_g_c - eps_u)
 
@@ -308,7 +334,7 @@ def compose_sample_regions(
             # dzielnik >= 1: tam gdzie maski sie nie nakladaja nic nie zmienia, a w strefie
             # przenikania usrednia zamiast sumowac
             wnorm = torch.clamp(wsum, min=1.0)
-            merged = alpha * eps_global
+            merged = alpha_eff * eps_global
             for ri, (r, m, mh, ac) in enumerate(zip(regions, use_masks, hard_masks, ac_r)):
                 if ground:
                     manager.set_ground(r["task_idx"], box_to_cxcywh(r["box"]))
@@ -337,8 +363,8 @@ def compose_sample_regions(
                                     encoder_hidden_states=r["hidden"].to(device=device, dtype=dtype),
                                     added_cond_kwargs=ac or None).sample
                 eps_r = eps_u + guidance_scale * (eps_c - eps_u)
-                merged = merged + (1.0 - alpha) * eps_r * (m.to(dtype) / wnorm)
-            merged = merged + (1.0 - alpha) * eps_global * (1.0 - wsum / wnorm)   # background
+                merged = merged + (1.0 - alpha_eff) * eps_r * (m.to(dtype) / wnorm)
+            merged = merged + (1.0 - alpha_eff) * eps_global * (1.0 - wsum / wnorm)   # background
             eps = merged
         else:
             eps = eps_global

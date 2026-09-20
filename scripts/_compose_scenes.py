@@ -72,6 +72,11 @@ def parse_args():
                          "kare do map ukladu (0 = wszystkie). Punkt do wlasnego podkatalogu")
     ap.add_argument("--kappa", type=float, default=-1.0,
                     help="ground_gain_base; <0 zostawia domyslne 1.0")
+    ap.add_argument("--global_boot", type=int, default=0,
+                    help="przez tyle pierwszych krokow galaz GLOBALNA widzi tlo bez podmiotow "
+                         "(wnetrza pudelek zastapione nierozstrzygnietym x_t). Celuje w bezglowe "
+                         "kopie konceptow POZA pudelkami. 0 = wylaczone, zachowanie bitowo "
+                         "identyczne z dotychczasowym.")
     ap.add_argument("--ground_sharp", type=float, default=-1.0,
                     help="ostrosc krawedzi maski GROUNDINGU (nie maski scalania -- ta jest pod "
                          "--feather). -1 = zostaw 40.0 z treningu. Nizej = koncept zanika przed "
@@ -349,6 +354,7 @@ def main():
                          "kappa": (a.kappa if a.kappa >= 0 else 1.0),
                          "ground_sharp": (a.ground_sharp if a.ground_sharp > 0 else 40.0),
                          "feather": a.feather,
+                         "global_boot": a.global_boot,
                          "kappa_area_ref": a.kappa_area_ref or None,
                          "kappa_area_pow": a.kappa_area_pow,
                          "kappa_mul": ({r["v"]: round(g["kappa_mul"], 3)
@@ -405,7 +411,8 @@ def main():
                                                  regional_steps=rs,
                                                  bootstrap_steps=boot,
                                                  uncond_pooled=up, ground=bool(a.ground),
-                                                 feather=a.feather)
+                                                 feather=a.feather,
+                                                 global_boot=a.global_boot)
                 save_image(img[0], os.path.join(d, f"{i}.png"))
             print(f"    [{tag(pt, boot, sc)}] {a.n} obrazow -> {d}", flush=True)
     print("\nDONE", flush=True)
